@@ -1,4 +1,5 @@
 import express from "express";
+import { collaboration } from "./collaboration.js";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { DatabaseSync } from "node:sqlite";
@@ -140,6 +141,7 @@ function auth(req, res, next) {
   }
   res.status(401).json({ error: "Bitte melde dich an." });
 }
+const { access, selected, defaultSpace, fail } = collaboration(app, db, auth);
 app.post("/api/auth/:action", authLimit, (req, res) => {
   const { email, password } = req.body;
   if (!["login", "register"].includes(req.params.action))
@@ -177,10 +179,12 @@ app.post("/api/auth/:action", authLimit, (req, res) => {
     Date.now() + 604800000,
   );
   cookie(res, token);
-  res.json({ email: user.email });
+  res.json({ email: user.email, color: user.color || "#9476ce" });
 });
 app.get("/api/me", auth, (req, res) =>
-  res.json(db.prepare("SELECT email FROM users WHERE id=?").get(req.user)),
+  res.json(
+    db.prepare("SELECT email,color FROM users WHERE id=?").get(req.user),
+  ),
 );
 app.post("/api/logout", auth, (req, res) => {
   const token = (req.headers.cookie || "")
@@ -194,14 +198,17 @@ app.post("/api/logout", auth, (req, res) => {
   cookie(res, "", 0);
   res.json({ ok: true });
 });
-app.get("/api/tasks", auth, (req, res) =>
+app.get("/api/tasks", auth, (req, res) => {
+  const space = selected(req);
   res.json(
     db
-      .prepare("SELECT body FROM tasks WHERE user_id=? ORDER BY updated DESC")
-      .all(req.user)
-      .map((r) => JSON.parse(r.body)),
-  ),
-);
+      .prepare(
+        "SELECT body,space_id FROM tasks WHERE space_id=? ORDER BY updated DESC",
+      )
+      .all(space.id)
+      .map((row) => ({ ...JSON.parse(row.body), spaceId: row.space_id })),
+  );
+});
 async function discordRequest(url, method, payload) {
   let response;
   try {
@@ -250,11 +257,11 @@ async function testDiscord(webhook) {
     allowed_mentions: { parse: [] },
     embeds: [
       {
-        title: "✓ Studio ist verbunden",
+        title: "🚀 Astro-Media ist verbunden",
         description:
-          "Die Testnachricht ist angekommen! Neue Aufgaben und Statusänderungen erscheinen ab jetzt in diesem Kanal. Bereits vorhandene Aufgaben kannst du in Studio über „Alle synchronisieren“ übertragen.",
+          "Die Testnachricht ist angekommen! Neue Aufgaben und Statusänderungen erscheinen ab jetzt in diesem Kanal. Bereits vorhandene Aufgaben kannst du in Astro-Media über „Alle synchronisieren“ übertragen.",
         color: 0x8172dc,
-        footer: { text: "STUDIO • Verbindungstest" },
+        footer: { text: "ASTRO-MEDIA • Verbindungstest" },
         timestamp: new Date().toISOString(),
       },
     ],
@@ -264,43 +271,71 @@ async function syncDiscord(user, id) {
   const row = db
     .prepare("SELECT * FROM tasks WHERE user_id=? AND id=?")
     .get(user, id);
+  if (!row) return "Aufgabe entfernt";
+  const space = db.prepare("SELECT * FROM spaces WHERE id=?").get(row.space_id);
   const webhook = db
     .prepare("SELECT webhook FROM settings WHERE user_id=?")
-    .get(user)?.webhook;
+    .get(space.owner_id)?.webhook;
   if (!webhook) return "Nicht verbunden";
+  const actor = db
+    .prepare("SELECT email,color FROM users WHERE id=?")
+    .get(row.updated_by || row.user_id);
   const task = JSON.parse(row.body);
-  const colors = [
-    0x8b80f9, 0x4d79f6, 0xe47a7a, 0xf1ae4c, 0x55b8c5, 0x8b80f9, 0x58b68d,
+  const emoji = ["💡", "🚀", "⛔", "🛠️", "🗓️", "📦", "✅"][
+    statuses.indexOf(task.status)
   ];
   const payload = {
+    username: "Astro-Media",
     allowed_mentions: { parse: [] },
     embeds: [
       {
-        title: task.title.slice(0, 256),
-        description: (task.description || "Neue Content-Idee").slice(0, 2000),
-        color: colors[statuses.indexOf(task.status)],
+        title: `${emoji} ${task.title}`.slice(0, 256),
+        ...(task.completionUrl ? { url: task.completionUrl } : {}),
+        description: (
+          task.description || "Eine neue Idee nimmt Form an."
+        ).slice(0, 1600),
+        color: parseInt((actor?.color || "#9476ce").slice(1), 16),
+        author: {
+          name: `${actor?.email || "Team"} · ${space.name}`.slice(0, 256),
+        },
         fields: [
-          { name: "Status", value: task.status, inline: true },
+          { name: "📍 Status", value: task.status, inline: true },
           {
-            name: "Kampagne",
+            name: "🪐 Aufgabenbereich",
+            value: space.name.slice(0, 200),
+            inline: true,
+          },
+          {
+            name: "📂 Kampagne",
             value: (task.category || "Allgemein").slice(0, 200),
             inline: true,
           },
           {
-            name: "Veröffentlichung",
+            name: "🗓️ Geplant",
             value: task.date ? task.date.replace("T", " · ") : "Noch offen",
             inline: true,
           },
           {
-            name: "Plattform / Format",
+            name: "🎬 Kanal & Format",
             value: `${task.platform} · ${task.format}`.slice(0, 200),
             inline: true,
           },
+          ...(task.completionUrl
+            ? [
+                {
+                  name: "🔗 Ergebnis",
+                  value: task.completionUrl.slice(0, 1000),
+                },
+              ]
+            : []),
+          ...(task.exampleUrl
+            ? [{ name: "💭 Referenz", value: task.exampleUrl.slice(0, 1000) }]
+            : []),
           ...(task.script
-            ? [{ name: "Videoscript", value: task.script.slice(0, 1024) }]
+            ? [{ name: "📝 Videoscript", value: task.script.slice(0, 700) }]
             : []),
         ],
-        footer: { text: "STUDIO • Marketing Planner" },
+        footer: { text: "ASTRO-MEDIA • Gemeinsam Ideen bewegen" },
         timestamp: new Date().toISOString(),
       },
     ],
@@ -318,7 +353,7 @@ async function syncDiscord(user, id) {
   }
   db.prepare(
     "UPDATE tasks SET message_id=? WHERE id=? AND user_id=? AND EXISTS (SELECT 1 FROM settings WHERE user_id=? AND webhook=?)",
-  ).run(message.id, id, user, user, webhook);
+  ).run(message.id, id, user, space.owner_id, webhook);
   return "Synchronisiert";
 }
 const queues = new Map();
@@ -337,6 +372,8 @@ function queuedSync(user, id) {
 }
 app.put("/api/tasks/:id", auth, async (req, res) => {
   const t = req.body;
+  if (!t || typeof t !== "object" || Array.isArray(t))
+    return res.status(400).json({ error: "Ungültige Aufgabe." });
   if (
     !/^[a-zA-Z0-9-]{1,64}$/.test(req.params.id) ||
     typeof t.title !== "string" ||
@@ -374,36 +411,88 @@ app.put("/api/tasks/:id", auth, async (req, res) => {
             ].includes(item),
         ))) ||
     (t.status === "In Planung" && !t.date) ||
-    (t.date && Number.isNaN(Date.parse(t.date)))
+    (t.date &&
+      (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t.date) ||
+        Number.isNaN(Date.parse(t.date))))
   )
     return res.status(400).json({
       error: "Bitte Titel, Status und einen gültigen Planungstermin prüfen.",
     });
-  const old = db
-    .prepare("SELECT user_id FROM tasks WHERE id=?")
-    .get(req.params.id);
-  if (old && old.user_id !== req.user) return res.sendStatus(404);
-  const task = { ...t, id: req.params.id, title: t.title.trim() };
+  const old = db.prepare("SELECT * FROM tasks WHERE id=?").get(req.params.id);
+  const space = old
+    ? access(old.space_id, req.user, true)
+    : access(t.spaceId || defaultSpace(req.user).id, req.user, true);
+  if (old && t.spaceId && t.spaceId !== old.space_id)
+    fail(
+      400,
+      "Aufgaben können nicht in einen anderen Bereich verschoben werden.",
+    );
+  const validLink = (value) => {
+    try {
+      const u = new URL(value);
+      return (
+        ["http:", "https:"].includes(u.protocol) &&
+        !u.username &&
+        !u.password &&
+        value.length <= 1000
+      );
+    } catch {
+      return false;
+    }
+  };
+  for (const key of ["exampleUrl", "completionUrl"])
+    if (
+      t[key] !== undefined &&
+      (typeof t[key] !== "string" || (t[key] && !validLink(t[key])))
+    )
+      fail(400, "Bitte einen gültigen HTTP(S)-Link ohne Zugangsdaten angeben.");
+  if (t.status === "Fertig (Hochgeladen)" && !t.completionUrl)
+    fail(
+      400,
+      "Für abgeschlossene Aufgaben ist ein Ergebnis-Link erforderlich.",
+    );
+  if (
+    t.assetIds !== undefined &&
+    (!Array.isArray(t.assetIds) ||
+      t.assetIds.length > 20 ||
+      t.assetIds.some(
+        (id) =>
+          typeof id !== "string" ||
+          !db
+            .prepare("SELECT id FROM assets WHERE id=? AND space_id=?")
+            .get(id, space.id),
+      ))
+  )
+    fail(
+      400,
+      "Bitte nur Medien aus diesem Aufgabenbereich verknüpfen (maximal 20).",
+    );
+  const creator = old?.user_id || req.user;
+  const task = {
+    ...t,
+    id: req.params.id,
+    title: t.title.trim(),
+    spaceId: space.id,
+  };
   db.prepare(
-    "INSERT INTO tasks(id,user_id,body,updated) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body,updated=excluded.updated",
-  ).run(task.id, req.user, JSON.stringify(task), Date.now());
+    "INSERT INTO tasks(id,user_id,body,updated,space_id,updated_by) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body,updated=excluded.updated,updated_by=excluded.updated_by",
+  ).run(task.id, creator, JSON.stringify(task), Date.now(), space.id, req.user);
   try {
-    res.json({ task, discord: await queuedSync(req.user, task.id) });
+    res.json({ task, discord: await queuedSync(creator, task.id) });
   } catch (e) {
     res.json({ task, discordError: e.message });
   }
 });
 app.delete("/api/tasks/:id", auth, async (req, res) => {
-  const row = db
-    .prepare("SELECT * FROM tasks WHERE id=? AND user_id=?")
-    .get(req.params.id, req.user);
+  const row = db.prepare("SELECT * FROM tasks WHERE id=?").get(req.params.id);
   if (!row) return res.sendStatus(404);
+  const space = access(row.space_id, req.user, true);
   const webhook = db
     .prepare("SELECT webhook FROM settings WHERE user_id=?")
-    .get(req.user)?.webhook;
+    .get(space.owner_id)?.webhook;
   let warning;
   try {
-    await queues.get(req.user + ":" + req.params.id);
+    await queues.get(row.user_id + ":" + req.params.id);
     const current = db
       .prepare("SELECT message_id FROM tasks WHERE id=?")
       .get(req.params.id);
@@ -422,7 +511,7 @@ app.delete("/api/tasks/:id", auth, async (req, res) => {
   }
   db.prepare("DELETE FROM tasks WHERE id=? AND user_id=?").run(
     req.params.id,
-    req.user,
+    row.user_id,
   );
   res.json({ ok: true, warning });
 });
@@ -460,9 +549,9 @@ app.put("/api/settings", auth, discordTestLimit, async (req, res) => {
       "INSERT INTO settings(user_id,webhook,tested_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET webhook=excluded.webhook,tested_at=excluded.tested_at",
     ).run(req.user, webhook, testedAt);
     if (previous !== webhook)
-      db.prepare("UPDATE tasks SET message_id=NULL WHERE user_id=?").run(
-        req.user,
-      );
+      db.prepare(
+        "UPDATE tasks SET message_id=NULL WHERE space_id IN (SELECT id FROM spaces WHERE owner_id=?)",
+      ).run(req.user);
     res.json({ connected: !!webhook, testedAt });
   } catch (error) {
     res.status(502).json({
@@ -496,12 +585,16 @@ app.post("/api/discord/sync", auth, async (req, res) => {
       ?.webhook
   )
     return res.status(400).json({ error: "Bitte zuerst Discord verbinden." });
-  const rows = db.prepare("SELECT id FROM tasks WHERE user_id=?").all(req.user);
+  const rows = db
+    .prepare(
+      "SELECT t.id,t.user_id FROM tasks t JOIN spaces s ON s.id=t.space_id WHERE s.owner_id=?",
+    )
+    .all(req.user);
   let firstError;
   let failed = 0;
   for (const row of rows) {
     try {
-      await queuedSync(req.user, row.id);
+      await queuedSync(row.user_id, row.id);
     } catch (error) {
       firstError ||= error.message;
       failed++;
@@ -512,16 +605,33 @@ app.post("/api/discord/sync", auth, async (req, res) => {
 if (!production) {
   const { createServer } = await import("vite");
   const vite = await createServer({
-    server: { middlewareMode: true },
+    server: {
+      middlewareMode: true,
+      hmr: { port: Number(process.env.PORT || 3000) + 1 },
+    },
     appType: "spa",
   });
   app.use(vite.middlewares);
-} else app.use(express.static("dist"));
+} else {
+  app.use(express.static("dist"));
+  app.get(/^(?!\/api(?:\/|$)).*/, (req, res) =>
+    res.sendFile(path.resolve("dist/index.html")),
+  );
+}
 app.use((err, req, res, next) => {
-  console.error(err.message);
-  res
-    .status(500)
-    .json({ error: "Die Anfrage konnte nicht verarbeitet werden." });
+  if (!err.status) console.error("Server error:", err.name);
+  res.status(err.status || 500).json({
+    error:
+      err.status === 413
+        ? "Datei zu groß. Maximal 8 MB pro Bild."
+        : err.type === "entity.parse.failed"
+          ? "Ungültiges JSON-Format."
+          : err.status
+            ? err.message
+            : "Die Anfrage konnte nicht verarbeitet werden.",
+  });
 });
 const port = Number(process.env.PORT || 3000);
-app.listen(port, "0.0.0.0", () => console.log("Studio läuft auf Port " + port));
+app.listen(port, "0.0.0.0", () =>
+  console.log("Astro-Media läuft auf Port " + port),
+);
