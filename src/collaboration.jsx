@@ -13,10 +13,11 @@ import {
 } from "lucide-react";
 export function ProfileColor({ api, user, onChange, notify }) {
   const [color, setColor] = useState(user.color || "#9476ce");
+  const [username, setUsername] = useState(user.username || "");
   return (
     <section className="settings-card profile-color">
       <div>
-        <h2>Deine Team-Farbe</h2>
+        <h2>Dein Profil</h2>
         <p>
           Diese Farbe kennzeichnet deine Änderungen in Discord – auch in
           geteilten Aufgabenbereichen.
@@ -28,15 +29,29 @@ export function ProfileColor({ api, user, onChange, notify }) {
           try {
             const result = await api("/profile", {
               method: "PUT",
-              body: JSON.stringify({ color }),
+              body: JSON.stringify({ color, username }),
             });
             onChange({ ...user, ...result });
-            notify("Deine Farbe wurde gespeichert.");
+            notify(
+              "Profil gespeichert. Discord zeigt deinen Username bei neuen Änderungen.",
+            );
           } catch (e) {
             notify(e.message);
           }
         }}
       >
+        <label>
+          Username
+          <input
+            aria-label="Username"
+            required
+            minLength={2}
+            maxLength={32}
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Dein Name im Team"
+          />
+        </label>
         <label>
           Persönliche Farbe
           <input
@@ -47,9 +62,9 @@ export function ProfileColor({ api, user, onChange, notify }) {
           />
         </label>
         <span className="color-preview" style={{ borderColor: color }}>
-          🚀 {user.email}
+          🚀 {username || user.username}
         </span>
-        <button className="primary">Farbe speichern</button>
+        <button className="primary">Profil speichern</button>
       </form>
     </section>
   );
@@ -494,6 +509,64 @@ export function StatusDialog({ task, status, onClose, onSave }) {
             {busy ? "Speichern…" : "Status übernehmen"}
           </button>
         </form>
+      </section>
+    </div>
+  );
+}
+
+export function CampaignDelete({ api, space, name, onClose, onDeleted }) {
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  return (
+    <div className="modal-backdrop">
+      <section
+        className="status-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Kampagne löschen"
+      >
+        <button
+          className="icon-button"
+          aria-label="Schließen"
+          onClick={onClose}
+        >
+          <X />
+        </button>
+        <span className="eyebrow">KAMPAGNE VERWALTEN</span>
+        <h2>„{name}“ löschen?</h2>
+        <p>
+          Die Kampagne wird entfernt. Ihre Aufgaben bleiben im Aufgabenbereich
+          erhalten und werden keiner Kampagne zugeordnet.
+        </p>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="settings-actions">
+          <button className="secondary" disabled={busy} onClick={onClose}>
+            Abbrechen
+          </button>
+          <button
+            className="primary danger-button"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                const result = await api("/campaigns", {
+                  method: "DELETE",
+                  body: JSON.stringify({ spaceId: space.id, name }),
+                });
+                await onDeleted(result);
+              } catch (e) {
+                setError(e.message);
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? "Wird gelöscht…" : "Kampagne endgültig löschen"}
+          </button>
+        </div>
       </section>
     </div>
   );

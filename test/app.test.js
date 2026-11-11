@@ -446,6 +446,17 @@ test("shared spaces enforce roles, media access, revocation and completion links
     return { status: response.status, body: await response.json() };
   };
   assert.equal((await upload(member.cookie)).status, 403);
+  assert.equal(
+    (
+      await call(
+        "/campaigns",
+        "DELETE",
+        { spaceId: space.id, name: "Launch" },
+        member.cookie,
+      )
+    ).status,
+    403,
+  );
   const image = await upload(owner.cookie);
   assert.equal(image.status, 201);
   assert.equal(image.body.mime, "image/png");
@@ -551,6 +562,31 @@ test("shared spaces enforce roles, media access, revocation and completion links
       .body[0].assetIds,
     [],
   );
+  assert.equal(
+    (
+      await call(
+        "/campaigns",
+        "DELETE",
+        { spaceId: space.id, name: "Launch" },
+        outsider.cookie,
+      )
+    ).status,
+    404,
+  );
+  const deletion = await call(
+    "/campaigns",
+    "DELETE",
+    { spaceId: space.id, name: "Launch" },
+    member.cookie,
+  );
+  assert.equal(deletion.status, 200);
+  assert.equal(deletion.body.updated, 1);
+  const retained = (
+    await call("/tasks?space=" + space.slug, "GET", undefined, owner.cookie)
+  ).body;
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].category, "");
+  assert.equal(retained[0].completionUrl, "https://example.com/result");
   const membership = (
     await call(
       "/spaces/" + space.slug + "/members",
@@ -587,6 +623,7 @@ test("shared spaces enforce roles, media access, revocation and completion links
 test("Discord shared changes use editor color and owners webhook", async () => {
   const owner = await call("/auth/register", "POST", {
     email: "color-owner@example.com",
+    username: "OrbitOwner",
     password: "owner-color-password-2026",
   });
   const editor = await call("/auth/register", "POST", {
@@ -597,7 +634,14 @@ test("Discord shared changes use editor color and owners webhook", async () => {
     await call("/spaces", "POST", { name: "Farben" }, owner.cookie)
   ).body;
   assert.equal(
-    (await call("/profile", "PUT", { color: "#12ab34" }, editor.cookie)).status,
+    (
+      await call(
+        "/profile",
+        "PUT",
+        { color: "#12ab34", username: "OrbitEditor" },
+        editor.cookie,
+      )
+    ).status,
     200,
   );
   assert.equal(
@@ -654,7 +698,7 @@ test("Discord shared changes use editor color and owners webhook", async () => {
   );
   assert.ok(event.url.includes("/color_owner?wait=true"));
   assert.equal(event.body.embeds[0].color, 0x12ab34);
-  assert.match(event.body.embeds[0].author.name, /color-editor@example.com/);
+  assert.match(event.body.embeds[0].author.name, /OrbitEditor/);
   assert.match(event.body.embeds[0].title, /💡/);
   assert.equal(
     (
@@ -675,5 +719,64 @@ test("Discord shared changes use editor color and owners webhook", async () => {
   );
   assert.equal(updated.method, "PATCH");
   assert.ok(updated.url.includes("/color_owner/messages/"));
-  assert.match(updated.body.embeds[0].author.name, /color-owner@example.com/);
+  assert.match(updated.body.embeds[0].author.name, /OrbitOwner/);
+  assert.equal(
+    (
+      await call(
+        "/campaigns",
+        "DELETE",
+        { spaceId: space.id, name: "Team" },
+        owner.cookie,
+      )
+    ).status,
+    200,
+  );
+  const campaignEvent = JSON.parse(
+    readFileSync(path.join(dir, "discord.log"), "utf8")
+      .trim()
+      .split("\n")
+      .at(-1),
+  );
+  assert.equal(campaignEvent.method, "PATCH");
+  assert.equal(
+    campaignEvent.body.embeds[0].fields.find((f) => f.name === "📂 Kampagne")
+      .value,
+    "Allgemein",
+  );
+});
+
+test("usernames persist and reject invalid profile updates", async () => {
+  const login = await call("/auth/register", "POST", {
+    email: "username@example.com",
+    password: "username-test-password",
+    username: "RP Creator",
+  });
+  assert.equal(login.status, 200);
+  assert.equal(login.body.username, "RP Creator");
+  assert.equal(
+    (
+      await call(
+        "/profile",
+        "PUT",
+        { color: "#123456", username: "x" },
+        login.cookie,
+      )
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await call(
+        "/profile",
+        "PUT",
+        { color: "#123456", username: "New Creator" },
+        login.cookie,
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await call("/me", "GET", undefined, login.cookie)).body.username,
+    "New Creator",
+  );
 });

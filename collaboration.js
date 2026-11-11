@@ -12,6 +12,8 @@ export function collaboration(app, db, auth) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   };
   add("users", "color", "TEXT NOT NULL DEFAULT '#9476ce'");
+  add("users", "username", "TEXT NOT NULL DEFAULT ''");
+  db.exec("UPDATE users SET username='Astro-' || id WHERE username=''");
   db.exec(`CREATE TABLE IF NOT EXISTS spaces(id TEXT PRIMARY KEY,slug TEXT UNIQUE NOT NULL,name TEXT NOT NULL,owner_id INTEGER NOT NULL REFERENCES users(id));
   CREATE TABLE IF NOT EXISTS members(space_id TEXT NOT NULL REFERENCES spaces(id),user_id INTEGER NOT NULL REFERENCES users(id),role TEXT NOT NULL CHECK(role IN ('viewer','editor')),PRIMARY KEY(space_id,user_id));
   CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY,space_id TEXT NOT NULL REFERENCES spaces(id),user_id INTEGER NOT NULL REFERENCES users(id),name TEXT NOT NULL,mime TEXT NOT NULL,bytes INTEGER NOT NULL,content BLOB NOT NULL,created TEXT NOT NULL);`);
@@ -154,12 +156,22 @@ export function collaboration(app, db, auth) {
   app.put("/api/profile", auth, (req, res) => {
     if (!/^#[a-fA-F0-9]{6}$/.test(req.body.color || ""))
       fail(400, "Ungültige Farbe.");
-    db.prepare("UPDATE users SET color=? WHERE id=?").run(
-      req.body.color,
-      req.user,
-    );
+    const username = req.body.username;
+    if (
+      username !== undefined &&
+      (typeof username !== "string" ||
+        username.trim().length < 2 ||
+        username.trim().length > 32 ||
+        /[\x00-\x1f]/.test(username))
+    )
+      fail(400, "Der Username muss 2–32 Zeichen lang sein.");
+    db.prepare(
+      "UPDATE users SET color=?,username=COALESCE(?,username) WHERE id=?",
+    ).run(req.body.color, username?.trim() ?? null, req.user);
     res.json(
-      db.prepare("SELECT email,color FROM users WHERE id=?").get(req.user),
+      db
+        .prepare("SELECT email,color,username FROM users WHERE id=?")
+        .get(req.user),
     );
   });
   app.get("/api/assets", auth, (req, res) => {

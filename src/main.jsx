@@ -1,3 +1,5 @@
+import { buildRpScript, rpTypes, rpGoals, rpCtas } from "./rp-script.js";
+import { CampaignDelete } from "./collaboration.jsx";
 import {
   ProfileColor,
   SpacesPanel,
@@ -43,6 +45,7 @@ import {
   Send,
 } from "lucide-react";
 import "./style.css";
+import "./trello.css";
 const statuses = [
   "Idee",
   "Wird umgesetzt",
@@ -62,6 +65,15 @@ const statusNames = [
   "Abgeschlossen",
 ];
 const colors = ["purple", "blue", "red", "orange", "cyan", "purple", "green"];
+const boardStatuses = [
+  statuses[0],
+  statuses[4],
+  statuses[1],
+  statuses[3],
+  statuses[5],
+  statuses[6],
+  statuses[2],
+];
 async function api(url, options = {}) {
   const response = await fetch("/api" + url, {
     ...options,
@@ -82,10 +94,10 @@ const blank = () => ({
   format: "Reel",
   status: "Idee",
   date: "",
-  goal: "Reichweite aufbauen",
+  goal: "Neue Spieler gewinnen",
   audience: "",
   hook: "Problem & Lösung",
-  cta: "Für mehr Tipps folgen",
+  cta: "Unserem Discord beitreten",
   script: "",
 });
 function Badge({ status }) {
@@ -128,6 +140,7 @@ function App() {
     [connected, setConnected] = useState(false),
     [mobile, setMobile] = useState(false),
     [pageError, setPageError] = useState("");
+  const [deletingCampaign, setDeletingCampaign] = useState(null);
   function notify(text) {
     setToast(text);
     setTimeout(() => setToast(""), 6500);
@@ -277,7 +290,7 @@ function App() {
             className="workspace-avatar"
             style={{ background: user.color, color: "white" }}
           >
-            {user.email[0].toUpperCase()}
+            {(user.username || user.email)[0].toUpperCase()}
           </span>
           <div>
             <strong>{space?.name || "Dein Workspace"}</strong>
@@ -360,10 +373,10 @@ function App() {
               className="user-avatar"
               style={{ background: user.color, color: "white" }}
             >
-              {user.email[0].toUpperCase()}
+              {(user.username || user.email)[0].toUpperCase()}
             </span>
             <div>
-              <strong>Mein Account</strong>
+              <strong>{user.username || "Mein Account"}</strong>
               <small>{user.email}</small>
             </div>
             <button
@@ -405,7 +418,7 @@ function App() {
               className="top-avatar"
               style={{ background: user.color, color: "white" }}
             >
-              {user.email[0].toUpperCase()}
+              {(user.username || user.email)[0].toUpperCase()}
             </span>
           </div>
         </header>
@@ -577,6 +590,16 @@ function App() {
                         <option key={c}>{c}</option>
                       ))}
                     </select>
+                    {canEdit && category !== "Alle Inhalte" && (
+                      <button
+                        className="campaign-delete-button"
+                        title="Kampagne löschen"
+                        aria-label="Kampagne löschen"
+                        onClick={() => setDeletingCampaign(category)}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
                     <select
                       aria-label="Nach Status filtern"
                       value={filter}
@@ -639,12 +662,28 @@ function App() {
                       ))}
                     </div>
                     <div className="kanban-board">
-                      {statuses
+                      {boardStatuses
                         .filter((s) => filter === "Alle Status" || s === filter)
                         .map((status, i) => (
                           <section
                             className="kanban-column"
                             data-status={status}
+                            onDragOver={(e) => {
+                              if (canEdit) {
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                              }
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (!canEdit) return;
+                              const id = e.dataTransfer.getData(
+                                "application/x-astro-task",
+                              );
+                              const task = tasks.find((t) => t.id === id);
+                              if (task && task.status !== status)
+                                changeStatus(task, status);
+                            }}
                             key={status}
                             aria-label={status}
                           >
@@ -724,6 +763,22 @@ function App() {
           existing={tasks.some((t) => t.id === editing.id)}
         />
       )}{" "}
+      {deletingCampaign && (
+        <CampaignDelete
+          api={api}
+          space={space}
+          name={deletingCampaign}
+          onClose={() => setDeletingCampaign(null)}
+          onDeleted={async (result) => {
+            setDeletingCampaign(null);
+            setCategory("Alle Inhalte");
+            await loadSpace(space.slug);
+            notify(
+              `Kampagne gelöscht. ${result.updated} Aufgaben bleiben erhalten.${result.discordFailed ? " Discord konnte nicht vollständig aktualisiert werden." : ""}`,
+            );
+          }}
+        />
+      )}
       {statusChange && (
         <StatusDialog
           task={statusChange.task}
@@ -761,7 +816,14 @@ function Stat({ icon: Icon, color, label, value, note }) {
 function TaskCard({ task: t, index, canEdit, onEdit, onStatus }) {
   const [open, setOpen] = useState(false);
   return (
-    <article className={"task-card kanban-task " + (open ? "expanded" : "")}>
+    <article
+      draggable={canEdit}
+      onDragStart={(e) => {
+        e.dataTransfer.setData("application/x-astro-task", t.id);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      className={"task-card kanban-task " + (open ? "expanded" : "")}
+    >
       <button
         className="card-toggle"
         aria-label={"Status und Details: " + t.title}
@@ -884,6 +946,7 @@ function TaskCard({ task: t, index, canEdit, onEdit, onStatus }) {
 function Auth({ onLogin }) {
   const [register, setRegister] = useState(false),
     [email, setEmail] = useState(""),
+    [username, setUsername] = useState(""),
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -947,7 +1010,11 @@ function Auth({ onLogin }) {
                 onLogin(
                   await api("/auth/" + (register ? "register" : "login"), {
                     method: "POST",
-                    body: JSON.stringify({ email, password }),
+                    body: JSON.stringify({
+                      email,
+                      password,
+                      ...(register ? { username } : {}),
+                    }),
                   }),
                 );
               } catch (e) {
@@ -957,6 +1024,20 @@ function Auth({ onLogin }) {
               }
             }}
           >
+            {register && (
+              <label>
+                Username
+                <input
+                  required
+                  autoComplete="nickname"
+                  minLength={2}
+                  maxLength={32}
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Dein Name in Astro-Media"
+                />
+              </label>
+            )}
             <label>
               E-Mail-Adresse
               <input
@@ -1008,7 +1089,7 @@ function Auth({ onLogin }) {
           </p>
           <div className="secure-note">
             <CheckCircle2 size={14} />
-            Deine Inhalte sind nur für dich sichtbar.
+            Deine Inhalte sind nur für freigegebene Accounts sichtbar.
           </div>
         </div>
       </div>
@@ -1034,6 +1115,10 @@ function Editor({
     notes: "",
     checklist: [],
     ...task,
+    rpType: task.rpType || rpTypes[0],
+    serverName: task.serverName || "",
+    goal: rpGoals.includes(task.goal) ? task.goal : rpGoals[0],
+    cta: rpCtas.includes(task.cta) ? task.cta : rpCtas[0],
   });
   const [tab, setTab] = useState("details"),
     [busy, setBusy] = useState(false),
@@ -1098,36 +1183,9 @@ function Editor({
       return;
     }
     setReplaceScript(false);
-    const title = t.title || "deinem Thema";
-    const hooks = {
-      "Problem & Lösung": `Kennst du das? Bei „${title}“ stehst du immer wieder vor derselben Herausforderung. Das kannst du ändern.`,
-      "Überraschender Fakt": `Bei „${title}“ wird dieser eine Punkt oft übersehen. [Ergänze einen belegbaren Fakt.]`,
-      "Vorher & Nachher": `Vorher: [konkrete Ausgangslage]. Nachher: [echtes Ergebnis]. So gelingt der Weg bei „${title}“.`,
-      "3 schnelle Tipps": `Drei Tipps zu „${title}“, die du heute noch umsetzen kannst.`,
-    };
-    const value = {
-      "Reichweite aufbauen":
-        "Zeige einen überraschenden, leicht teilbaren Tipp.",
-      "Vertrauen stärken":
-        "Zeige deinen Prozess und ein nachvollziehbares Beispiel.",
-      "Produkt erklären":
-        "Demonstriere eine Funktion und ihren konkreten Nutzen.",
-      "Leads gewinnen": "Zeige das Problem und einen ersten Lösungsweg.",
-      "Community aktivieren":
-        "Teile deine Sicht und stelle eine konkrete Frage.",
-    }[t.goal];
-    const short = t.duration === "15 Sekunden",
-      long = t.duration === "60–90 Sekunden";
-    const times = short
-      ? ["0–2", "2–4", "4–10", "10–12", "12–15"]
-      : long
-        ? ["0–5", "5–15", "15–55", "55–75", "75–90"]
-        : ["0–3", "3–8", "8–25", "25–35", "35–45"];
-    field(
-      "script",
-      `BRIEFING\n${t.platform} · ${t.format} · ${t.duration}\nZiel: ${t.goal} · Ton: ${t.tone}\nZielgruppe: ${t.audience || "[Beschreibe deine Zielgruppe]"}\n\nHOOK · ${times[0]} SEKUNDEN\n${hooks[t.hook]}\n[Bild: Starker Einstieg. Kernaussage als Texteinblendung.]\n\nPROBLEM · ${times[1]} SEKUNDEN\n${t.description || "[Beschreibe das konkrete Problem deiner Zielgruppe in einem Satz.]"}\n\nMEHRWERT · ${times[2]} SEKUNDEN\n${value}\n${short ? "[Ein praktischer Schritt, direkt demonstriert.]" : "1. [Konkreter, sofort umsetzbarer Schritt.]\n2. [Nutzen anhand eines Beispiels zeigen.]\n3. [Häufigen Fehler und besseren Weg erklären.]"}\n\nBEWEIS · ${times[3]} SEKUNDEN\n[Zeige ein echtes Ergebnis, eine Demonstration oder eine freigegebene Kundenstimme. Keine unbelegten Versprechen.]\n\nCALL TO ACTION · ${times[4]} SEKUNDEN\n${t.cta}.\n[Bild: Handlungsaufforderung einblenden. Ruhiges Schlussbild.]`,
-    );
+    field("script", buildRpScript(t));
   }
+
   const presets = [
     ["Reel / Short", "Instagram", "Reel"],
     ["TikTok", "TikTok", "Video"],
@@ -1225,7 +1283,7 @@ function Editor({
                   Titel deiner Idee
                   <input
                     autoFocus
-                    placeholder="z. B. 3 Fehler, die deinen Content ausbremsen"
+                    placeholder="z. B. Neues Housing-System: Dein Zuhause in der Stadt"
                     maxLength={200}
                     value={t.title}
                     onChange={(e) => field("title", e.target.value)}
@@ -1520,21 +1578,27 @@ function Editor({
                     <Sparkles size={20} />
                   </span>
                   <div>
-                    <h3>Eine klare Struktur. Deine eigene Stimme.</h3>
+                    <h3>Deine Stadt. Deine Geschichten.</h3>
                     <p>
-                      Vier Entscheidungen machen aus deiner Idee ein
-                      drehfertiges Gerüst.
+                      Erstelle Gameplay-Scripts für Features, Fraktionen,
+                      Updates und die Community deines GTA-RP-Servers.
                     </p>
                   </div>
                 </div>
                 <div className="form-row">
-                  {select("goal", "Was ist dein Ziel?", [
-                    "Reichweite aufbauen",
-                    "Vertrauen stärken",
-                    "Produkt erklären",
-                    "Leads gewinnen",
-                    "Community aktivieren",
-                  ])}
+                  {select("rpType", "Was möchtest du vorstellen?", rpTypes)}
+                  <label>
+                    GTA-RP-Server
+                    <input
+                      maxLength={80}
+                      value={t.serverName}
+                      onChange={(e) => field("serverName", e.target.value)}
+                      placeholder="Name deiner Stadt / deines Servers"
+                    />
+                  </label>
+                </div>
+                <div className="form-row">
+                  {select("goal", "Was ist dein Ziel?", rpGoals)}
                   {select("hook", "Wie möchtest du starten?", [
                     "Problem & Lösung",
                     "Überraschender Fakt",
@@ -1546,7 +1610,7 @@ function Editor({
                   Für wen ist der Content?
                   <input
                     maxLength={500}
-                    placeholder="z. B. Gründer, die ihr Marketing selbst machen"
+                    placeholder="z. B. neue RP-Spieler, erfahrene Cops, zivile Charaktere"
                     value={t.audience}
                     onChange={(e) => field("audience", e.target.value)}
                   />
@@ -1564,14 +1628,7 @@ function Editor({
                     "Inspirierend & motivierend",
                   ])}
                 </div>
-                {select("cta", "Was soll danach passieren?", [
-                  "Für mehr Tipps folgen",
-                  "Beitrag speichern",
-                  "Eigene Erfahrung kommentieren",
-                  "Link in der Bio besuchen",
-                  "Nachricht senden",
-                  "Mit dem Team teilen",
-                ])}
+                {select("cta", "Was soll danach passieren?", rpCtas)}
                 <button type="button" className="generate" onClick={generate}>
                   <Sparkles size={17} />
                   {replaceScript
