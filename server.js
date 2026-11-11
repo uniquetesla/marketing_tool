@@ -11,7 +11,10 @@ import {
 } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { setGlobalProxyFromEnv } from "node:http";
+import {
+  setGlobalProxyFromEnv,
+  createServer as createHttpServer,
+} from "node:http";
 
 // Node fetch does not otherwise use the host’s HTTP(S)_PROXY configuration.
 setGlobalProxyFromEnv();
@@ -659,12 +662,13 @@ app.post("/api/discord/sync", auth, async (req, res) => {
   }
   res.json({ total: rows.length, failed, error: firstError });
 });
+const httpServer = createHttpServer(app);
 if (!production) {
   const { createServer } = await import("vite");
   const vite = await createServer({
     server: {
       middlewareMode: true,
-      hmr: { port: Number(process.env.PORT || 3000) + 1 },
+      hmr: { server: httpServer },
     },
     appType: "spa",
   });
@@ -689,6 +693,6 @@ app.use((err, req, res, next) => {
   });
 });
 const port = Number(process.env.PORT || 3000);
-app.listen(port, "0.0.0.0", () =>
+httpServer.listen(port, "0.0.0.0", () =>
   console.log("Astro-Media läuft auf Port " + port),
 );
