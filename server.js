@@ -143,7 +143,7 @@ function auth(req, res, next) {
 }
 const { access, selected, defaultSpace, fail } = collaboration(app, db, auth);
 app.post("/api/auth/:action", authLimit, (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, username } = req.body;
   if (!["login", "register"].includes(req.params.action))
     return res.sendStatus(404);
   if (
@@ -158,6 +158,17 @@ app.post("/api/auth/:action", authLimit, (req, res) => {
       error:
         "Gültige E-Mail und Passwort mit mindestens 12 Zeichen erforderlich.",
     });
+  if (
+    req.params.action === "register" &&
+    username !== undefined &&
+    (typeof username !== "string" ||
+      username.trim().length < 2 ||
+      username.trim().length > 32 ||
+      /[\x00-\x1f]/.test(username))
+  )
+    return res
+      .status(400)
+      .json({ error: "Der Username muss 2–32 Zeichen lang sein." });
   const normalized = email.trim().toLowerCase();
   let user = db.prepare("SELECT * FROM users WHERE email=?").get(normalized);
   if (req.params.action === "register") {
@@ -168,7 +179,12 @@ app.post("/api/auth/:action", authLimit, (req, res) => {
     const result = db
       .prepare("INSERT INTO users(email,password) VALUES(?,?)")
       .run(normalized, hashPassword(password));
-    user = { id: Number(result.lastInsertRowid), email: normalized };
+    const id = Number(result.lastInsertRowid);
+    db.prepare("UPDATE users SET username=? WHERE id=?").run(
+      username?.trim() || "Astro-" + id,
+      id,
+    );
+    user = db.prepare("SELECT * FROM users WHERE id=?").get(id);
   } else if (!user || !verifyPassword(password, user.password))
     return res.status(401).json({ error: "E-Mail oder Passwort ist falsch." });
   const token = randomBytes(32).toString("hex");
@@ -179,11 +195,17 @@ app.post("/api/auth/:action", authLimit, (req, res) => {
     Date.now() + 604800000,
   );
   cookie(res, token);
-  res.json({ email: user.email, color: user.color || "#9476ce" });
+  res.json({
+    email: user.email,
+    color: user.color || "#9476ce",
+    username: user.username,
+  });
 });
 app.get("/api/me", auth, (req, res) =>
   res.json(
-    db.prepare("SELECT email,color FROM users WHERE id=?").get(req.user),
+    db
+      .prepare("SELECT email,color,username FROM users WHERE id=?")
+      .get(req.user),
   ),
 );
 app.post("/api/logout", auth, (req, res) => {
@@ -278,7 +300,7 @@ async function syncDiscord(user, id) {
     .get(space.owner_id)?.webhook;
   if (!webhook) return "Nicht verbunden";
   const actor = db
-    .prepare("SELECT email,color FROM users WHERE id=?")
+    .prepare("SELECT email,color,username FROM users WHERE id=?")
     .get(row.updated_by || row.user_id);
   const task = JSON.parse(row.body);
   const emoji = ["💡", "🚀", "⛔", "🛠️", "🗓️", "📦", "✅"][
@@ -296,7 +318,7 @@ async function syncDiscord(user, id) {
         ).slice(0, 1600),
         color: parseInt((actor?.color || "#9476ce").slice(1), 16),
         author: {
-          name: `${actor?.email || "Team"} · ${space.name}`.slice(0, 256),
+          name: `${actor?.username || "Team"} · ${space.name}`.slice(0, 256),
         },
         fields: [
           { name: "📍 Status", value: task.status, inline: true },
@@ -370,6 +392,41 @@ function queuedSync(user, id) {
     .catch(() => {});
   return promise;
 }
+app.delete("/api/campaigns", auth, async (req, res) => {
+  const { spaceId, name } = req.body || {};
+  if (typeof name !== "string" || !name.trim() || name.length > 12000)
+    return res.status(400).json({ error: "Bitte eine Kampagne auswählen." });
+  const space = access(spaceId, req.user, true);
+  const rows = db
+    .prepare("SELECT * FROM tasks WHERE space_id=?")
+    .all(space.id)
+    .filter((row) => JSON.parse(row.body).category === name);
+  if (!rows.length)
+    return res.status(404).json({ error: "Kampagne nicht gefunden." });
+  db.exec("BEGIN");
+  try {
+    for (const row of rows) {
+      const task = JSON.parse(row.body);
+      task.category = "";
+      db.prepare(
+        "UPDATE tasks SET body=?,updated=?,updated_by=? WHERE id=?",
+      ).run(JSON.stringify(task), Date.now(), req.user, row.id);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  let failed = 0;
+  for (const row of rows) {
+    try {
+      await queuedSync(row.user_id, row.id);
+    } catch {
+      failed++;
+    }
+  }
+  res.json({ ok: true, updated: rows.length, discordFailed: failed });
+});
 app.put("/api/tasks/:id", auth, async (req, res) => {
   const t = req.body;
   if (!t || typeof t !== "object" || Array.isArray(t))
@@ -392,7 +449,7 @@ app.put("/api/tasks/:id", auth, async (req, res) => {
       "script",
       "date",
     ].some((k) => typeof t[k] !== "string" || t[k].length > 12000) ||
-    ["owner", "notes", "duration", "tone"].some(
+    ["owner", "notes", "duration", "tone", "rpType", "serverName"].some(
       (key) =>
         t[key] !== undefined &&
         (typeof t[key] !== "string" || t[key].length > 12000),
