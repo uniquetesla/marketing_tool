@@ -1,3 +1,10 @@
+import {
+  ProfileColor,
+  SpacesPanel,
+  MediaLibrary,
+  StatusDialog,
+} from "./collaboration.jsx";
+import { Users, Image as ImageIcon } from "lucide-react";
 import "@fontsource/dm-sans/400.css";
 import "@fontsource/dm-sans/500.css";
 import "@fontsource/dm-sans/600.css";
@@ -52,7 +59,7 @@ const statusNames = [
   "In Bearbeitung",
   "In Planung",
   "Bereit für Upload",
-  "Hochgeladen",
+  "Abgeschlossen",
 ];
 const colors = ["purple", "blue", "red", "orange", "cyan", "purple", "green"];
 async function api(url, options = {}) {
@@ -90,21 +97,67 @@ function Badge({ status }) {
     </span>
   );
 }
+function scrollToStatus(status) {
+  requestAnimationFrame(() => {
+    const board = document.querySelector(".kanban-board");
+    const column = [...(board?.children || [])].find(
+      (el) => el.dataset.status === status,
+    );
+    if (board && column)
+      board.scrollTo({
+        left: column.offsetLeft - board.firstElementChild.offsetLeft,
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "instant"
+          : "smooth",
+      });
+  });
+}
 function App() {
   const [user, setUser] = useState(null),
     [checking, setChecking] = useState(true),
+    [spaces, setSpaces] = useState([]),
+    [space, setSpace] = useState(null),
     [tasks, setTasks] = useState([]),
     [view, setView] = useState("board"),
-    [category, setCategory] = useState("Alle Inhalte"),
     [search, setSearch] = useState(""),
     [filter, setFilter] = useState("Alle Status"),
+    [category, setCategory] = useState("Alle Inhalte"),
     [editing, setEditing] = useState(null),
+    [statusChange, setStatusChange] = useState(null),
     [toast, setToast] = useState(""),
     [connected, setConnected] = useState(false),
-    [mobile, setMobile] = useState(false);
-  function notify(t) {
-    setToast(t);
+    [mobile, setMobile] = useState(false),
+    [pageError, setPageError] = useState("");
+  function notify(text) {
+    setToast(text);
     setTimeout(() => setToast(""), 6500);
+  }
+  async function loadSpace(slug) {
+    try {
+      setPageError("");
+      const s = await api("/spaces/" + encodeURIComponent(slug));
+      setSpace(s);
+      const loaded = await api("/tasks?space=" + encodeURIComponent(s.slug));
+      setTasks(loaded);
+      if (loaded[0]) scrollToStatus(loaded[0].status);
+    } catch (e) {
+      setPageError(e.message);
+      setSpace(null);
+      setTasks([]);
+    }
+  }
+  async function choose(s) {
+    history.pushState({}, "", "/" + s.slug);
+    setCategory("Alle Inhalte");
+    setView("board");
+    setEditing(null);
+    setMobile(false);
+    await loadSpace(s.slug);
+  }
+  async function refreshSpaces() {
+    const result = await api("/spaces");
+    setSpaces(result);
+    return result;
   }
   useEffect(() => {
     api("/me")
@@ -113,22 +166,58 @@ function App() {
       .finally(() => setChecking(false));
   }, []);
   useEffect(() => {
-    if (user) {
-      api("/tasks")
-        .then(setTasks)
-        .catch((e) => notify(e.message));
-      api("/settings")
-        .then((s) => setConnected(s.connected))
-        .catch((e) => notify(e.message));
-    }
-  }, [user]);
+    if (!user) return;
+    refreshSpaces()
+      .then((list) => {
+        const slug = location.pathname.split("/").filter(Boolean)[0];
+        if (slug) loadSpace(decodeURIComponent(slug));
+        else if (list[0]) {
+          history.replaceState({}, "", "/" + list[0].slug);
+          loadSpace(list[0].slug);
+        }
+      })
+      .catch((e) => setPageError(e.message));
+    api("/settings")
+      .then((s) => setConnected(s.connected))
+      .catch((e) => notify(e.message));
+    const pop = () => {
+      const slug = location.pathname.split("/").filter(Boolean)[0];
+      if (slug) loadSpace(decodeURIComponent(slug));
+      else refreshSpaces().then((list) => list[0] && choose(list[0]));
+    };
+    window.addEventListener("popstate", pop);
+    return () => window.removeEventListener("popstate", pop);
+  }, [user?.email]);
+  useEffect(() => {
+    if (!space) return;
+    let active = true;
+    const refresh = () =>
+      api("/tasks?space=" + encodeURIComponent(space.slug))
+        .then((result) => {
+          if (active) setTasks(result);
+        })
+        .catch((e) => {
+          if (active) {
+            setPageError(e.message);
+            setSpace(null);
+            setTasks([]);
+          }
+        });
+    const timer = setInterval(refresh, 15000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [space?.id]);
   if (checking)
     return (
       <div className="loading">
-        <Sparkles /> Studio wird geladen…
+        <Sparkles />
+        Astro-Media wird geladen…
       </div>
     );
   if (!user) return <Auth onLogin={setUser} />;
+  const canEdit = space && space.role !== "viewer";
   const categories = [...new Set(tasks.map((t) => t.category).filter(Boolean))];
   const filtered = tasks.filter(
     (t) =>
@@ -138,109 +227,119 @@ function App() {
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
-  const planned = tasks.filter((t) => t.status === "In Planung").length;
-  const done = tasks.filter((t) => t.status === "Fertig (Hochgeladen)").length;
   async function save(t) {
     const result = await api("/tasks/" + t.id, {
       method: "PUT",
-      body: JSON.stringify(t),
+      body: JSON.stringify({ ...t, spaceId: space.id }),
     });
     setTasks((prev) => [result.task, ...prev.filter((x) => x.id !== t.id)]);
     setEditing(null);
+    setFilter("Alle Status");
+    scrollToStatus(result.task.status);
     notify(
-      result.discordError ||
-        "Aufgabe gespeichert" +
-          (result.discord === "Synchronisiert"
-            ? " · Discord aktualisiert"
-            : ""),
+      result.discordError
+        ? "Gespeichert · " + result.discordError
+        : "Aufgabe gespeichert" +
+            (result.discord === "Synchronisiert"
+              ? " · Discord aktualisiert"
+              : ""),
     );
+  }
+  async function changeStatus(task, status) {
+    if (
+      (status === "In Planung" && !task.date) ||
+      (status === "Fertig (Hochgeladen)" && !task.completionUrl)
+    ) {
+      setStatusChange({ task, status });
+      return;
+    }
+    try {
+      await save({ ...task, status });
+    } catch (e) {
+      notify(e.message);
+    }
   }
   return (
     <div className="app">
       <aside className={mobile ? "sidebar open" : "sidebar"}>
-        <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
+        <a
+          href={"/" + (space?.slug || "")}
+          className="brand"
+          onClick={(e) => e.preventDefault()}
+        >
           <span className="brand-icon">
-            <Clapperboard size={22} />
+            <Sparkles size={22} />
           </span>
-          studio<span className="brand-dot">.</span>
+          Astro<span>-Media</span>
         </a>
         <div className="workspace">
-          <span className="workspace-avatar">M</span>
+          <span
+            className="workspace-avatar"
+            style={{ background: user.color, color: "white" }}
+          >
+            {user.email[0].toUpperCase()}
+          </span>
           <div>
-            <strong>Mein Workspace</strong>
-            <small>Marketing Studio</small>
+            <strong>{space?.name || "Dein Workspace"}</strong>
+            <small>
+              {space?.role === "viewer"
+                ? "Nur ansehen"
+                : space?.role === "editor"
+                  ? "Geteilt · Bearbeiten"
+                  : "Dein kreativer Orbit"}
+            </small>
           </div>
-          <ChevronDown size={15} />
         </div>
         <div className="nav-label">WORKSPACE</div>
         <nav>
           {[
             ["board", LayoutGrid, "Content Board"],
             ["calendar", CalendarDays, "Kalender"],
+            ["media", ImageIcon, "Medienbibliothek"],
+            ["spaces", Users, "Aufgabenbereiche"],
           ].map(([id, Icon, label]) => (
             <button
-              className={view === id ? "nav-item active" : "nav-item"}
+              className={"nav-item " + (view === id ? "active" : "")}
               key={id}
               onClick={() => {
                 setView(id);
                 setMobile(false);
               }}
             >
-              <Icon size={19} />
+              <Icon size={18} />
               {label}
-              {id === "board" && (
-                <span className="nav-count">{tasks.length}</span>
-              )}
             </button>
           ))}
         </nav>
         <div className="nav-label campaign-label">
-          KAMPAGNEN{" "}
+          AUFGABENBEREICHE
           <button
-            title="Kampagne anlegen"
-            onClick={() =>
-              setEditing({ ...blank(), category: "Neue Kampagne" })
-            }
+            title="Aufgabenbereiche verwalten"
+            onClick={() => setView("spaces")}
           >
             <Plus size={16} />
           </button>
         </div>
-        <button
-          className={
-            "category-link " + (category === "Alle Inhalte" ? "chosen" : "")
-          }
-          onClick={() => {
-            setCategory("Alle Inhalte");
-            setView("board");
-          }}
-        >
-          <span className="category-dot all" />
-          Alle Inhalte
-        </button>
-        {categories.map((c, i) => (
-          <button
-            key={c}
-            className={"category-link " + (category === c ? "chosen" : "")}
-            onClick={() => {
-              setCategory(c);
-              setView("board");
-            }}
-          >
-            <span className={"category-dot dot" + (i % 4)} />
-            {c}
-            <span>{tasks.filter((t) => t.category === c).length}</span>
-          </button>
-        ))}
-        {!categories.length && (
-          <p className="category-hint">
-            Organisiere deine Inhalte in eigenen Kampagnen.
-          </p>
-        )}
+        <div className="sidebar-spaces">
+          {spaces.map((s) => (
+            <button
+              key={s.id}
+              className={
+                "category-link " + (s.id === space?.id ? "chosen" : "")
+              }
+              onClick={() => choose(s)}
+            >
+              <span className="category-dot" />
+              {s.name}
+              {s.role !== "owner" && <Users size={12} />}
+            </button>
+          ))}
+        </div>
         <div className="sidebar-bottom">
           <div className="discord-promo">
-            <span className="discord-symbol">◒</span>
-            <strong>Gute Ideen. Im Team.</strong>
-            <p>Deine Content-Planung direkt in deinem Discord.</p>
+            <Send size={21} />
+            <strong>Dein Team. Im selben Orbit.</strong>
+            <p>Gemeinsame Planung mit persönlichen Farben in Discord.</p>
             <button onClick={() => setView("settings")}>
               {connected ? "Verbindung verwalten" : "Discord verbinden"}
               <ArrowUpRight size={15} />
@@ -248,13 +347,21 @@ function App() {
           </div>
           <button
             className={"nav-item " + (view === "settings" ? "active" : "")}
-            onClick={() => setView("settings")}
+            onClick={() => {
+              setView("settings");
+              setMobile(false);
+            }}
           >
             <Settings size={18} />
             Einstellungen
           </button>
           <div className="profile">
-            <span className="user-avatar">{user.email[0].toUpperCase()}</span>
+            <span
+              className="user-avatar"
+              style={{ background: user.color, color: "white" }}
+            >
+              {user.email[0].toUpperCase()}
+            </span>
             <div>
               <strong>Mein Account</strong>
               <small>{user.email}</small>
@@ -262,9 +369,15 @@ function App() {
             <button
               title="Abmelden"
               onClick={async () => {
-                await api("/logout", { method: "POST" });
-                setUser(null);
-                setTasks([]);
+                try {
+                  await api("/logout", { method: "POST" });
+                  setUser(null);
+                  setTasks([]);
+                  setSpaces([]);
+                  setSpace(null);
+                } catch (e) {
+                  notify(e.message);
+                }
               }}
             >
               <LogOut size={17} />
@@ -274,216 +387,349 @@ function App() {
       </aside>
       <main>
         <header className="topbar">
-          <button className="mobile-menu" onClick={() => setMobile(!mobile)}>
+          <button
+            className="mobile-menu"
+            aria-label="Menü öffnen"
+            onClick={() => setMobile(!mobile)}
+          >
             <Menu size={21} />
           </button>
           <div className="breadcrumb">
-            Workspace <span>/</span>
-            <strong>
-              {view === "board"
-                ? "Content Board"
-                : view === "calendar"
-                  ? "Kalender"
-                  : "Einstellungen"}
-            </strong>
+            Astro-Media<span>/</span>
+            <strong>{space?.name || "Workspace"}</strong>
           </div>
           <div className="topbar-right">
             <span className="live-dot" />
-            Dein kreativer Workspace
-            <span className="top-avatar">{user.email[0].toUpperCase()}</span>
+            Gemeinsam Ideen bewegen
+            <span
+              className="top-avatar"
+              style={{ background: user.color, color: "white" }}
+            >
+              {user.email[0].toUpperCase()}
+            </span>
           </div>
         </header>
         <div className="main-content">
+          {pageError && (
+            <div className="error" role="alert">
+              {pageError} Wähle einen freigegebenen Aufgabenbereich in der
+              Navigation.
+            </div>
+          )}
           {view === "settings" ? (
-            <SettingsPage
-              connected={connected}
-              setConnected={setConnected}
-              notify={notify}
-            />
-          ) : (
+            <>
+              <ProfileColor
+                api={api}
+                user={user}
+                onChange={setUser}
+                notify={notify}
+              />
+              <SettingsPage
+                connected={connected}
+                setConnected={setConnected}
+                notify={notify}
+              />
+            </>
+          ) : view === "spaces" ? (
             <>
               <div className="page-heading">
                 <div>
-                  <div className="eyebrow">WENIGER CHAOS. MEHR CONTENT.</div>
-                  <h1>
-                    {view === "calendar"
-                      ? "Dein Content-Kalender"
-                      : category === "Alle Inhalte"
-                        ? "Deine nächste große Idee."
-                        : category}
-                    <span className="heading-dot">
-                      <Sparkles size={27} />
-                    </span>
-                  </h1>
-                  <p>
-                    Von der ersten Idee bis zum Upload. Hier wird dein Content
-                    lebendig.
-                  </p>
-                </div>
-                <button className="primary" onClick={() => setEditing(blank())}>
-                  <Plus size={18} />
-                  Neue Aufgabe
-                </button>
-              </div>
-              <div className="stats">
-                <Stat
-                  icon={LayoutGrid}
-                  color="purple"
-                  label="Inhalte insgesamt"
-                  value={tasks.length}
-                  note="Dein kreativer Überblick"
-                />
-                <Stat
-                  icon={Lightbulb}
-                  color="orange"
-                  label="Neue Ideen"
-                  value={tasks.filter((t) => t.status === "Idee").length}
-                  note="Bereit, groß zu werden"
-                />
-                <Stat
-                  icon={CalendarDays}
-                  color="blue"
-                  label="In Planung"
-                  value={planned}
-                  note="Alles zu seiner Zeit"
-                />
-                <Stat
-                  icon={CheckCircle2}
-                  color="green"
-                  label="Veröffentlicht"
-                  value={done}
-                  note="Draußen in der Welt"
-                />
-              </div>
-              <div className="content-toolbar">
-                <div className="view-tabs">
-                  <button
-                    className={view === "board" ? "selected" : ""}
-                    onClick={() => setView("board")}
-                  >
-                    <LayoutGrid size={16} />
-                    Board
-                  </button>
-                  <button
-                    className={view === "calendar" ? "selected" : ""}
-                    onClick={() => setView("calendar")}
-                  >
-                    <CalendarDays size={16} />
-                    Kalender
-                  </button>
-                </div>
-                <div className="filters">
-                  <div className="search">
-                    <Search size={16} />
-                    <input
-                      placeholder="Inhalte durchsuchen…"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                    />
-                  </div>
-                  <select
-                    aria-label="Nach Status filtern"
-                    value={filter}
-                    onChange={(e) => setFilter(e.target.value)}
-                  >
-                    <option>Alle Status</option>
-                    {statuses.map((s) => (
-                      <option key={s}>{s}</option>
-                    ))}
-                  </select>
+                  <div className="eyebrow">RAUM FÜR GEMEINSAME IDEEN</div>
+                  <h1>Aufgabenbereiche</h1>
+                  <p>Eigene Links. Klare Rechte. Ein gemeinsamer Plan.</p>
                 </div>
               </div>
-              {view === "calendar" ? (
-                <Calendar
-                  tasks={filtered}
-                  onEdit={setEditing}
-                  onNew={(date) =>
-                    setEditing({
-                      ...blank(),
-                      date: date + "T10:00",
-                      status: "In Planung",
-                    })
-                  }
-                />
-              ) : (
-                <>
-                  <div className="section-title">
-                    <h2>
-                      {category} <span>{filtered.length}</span>
-                    </h2>
-                    <span>Jede große Geschichte beginnt mit einer Idee.</span>
-                  </div>
-                  <div className="card-grid">
-                    {filtered.map((t, i) => (
-                      <TaskCard
-                        key={t.id}
-                        task={t}
-                        index={i}
-                        onClick={() => setEditing(t)}
-                      />
-                    ))}
-                    <button
-                      className="add-card"
-                      onClick={() =>
-                        setEditing({
-                          ...blank(),
-                          category: category === "Alle Inhalte" ? "" : category,
-                        })
-                      }
-                    >
-                      <span>
-                        <Plus size={23} />
+              <SpacesPanel
+                api={api}
+                spaces={spaces}
+                active={space}
+                onChange={choose}
+                onCreated={async (s) => {
+                  await refreshSpaces();
+                  await choose(s);
+                  setView("spaces");
+                }}
+                notify={notify}
+              />
+            </>
+          ) : space && view === "media" ? (
+            <MediaLibrary api={api} space={space} notify={notify} />
+          ) : (
+            space && (
+              <>
+                <div className="page-heading">
+                  <div>
+                    <div className="eyebrow">
+                      DEIN CONTENT. IM RICHTIGEN ORBIT.
+                    </div>
+                    <h1>
+                      {view === "calendar"
+                        ? "Dein Content-Kalender"
+                        : space.name}
+                      <span className="heading-dot">
+                        <Sparkles size={26} />
                       </span>
-                      <strong>Platz für deine nächste Idee</strong>
-                      <small>Neue Aufgabe erstellen</small>
+                    </h1>
+                    <p>
+                      Von der Idee zum Ergebnis. Jede Karte findet ihren
+                      nächsten Platz.
+                    </p>
+                    <div className="area-meta">
+                      <span>/{space.slug}</span>
+                      <span>
+                        {space.role === "owner"
+                          ? "Eigentümer"
+                          : canEdit
+                            ? "Bearbeitungszugriff"
+                            : "Lesezugriff"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="heading-actions">
+                    <button
+                      className="secondary"
+                      onClick={() => setView("spaces")}
+                    >
+                      <Users size={16} />
+                      Freigabe
+                    </button>
+                    {canEdit && (
+                      <button
+                        className="primary"
+                        onClick={() =>
+                          setEditing({ ...blank(), spaceId: space.id })
+                        }
+                      >
+                        <Plus size={17} />
+                        Neue Aufgabe
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="stats">
+                  <Stat
+                    icon={LayoutGrid}
+                    color="purple"
+                    label="Inhalte insgesamt"
+                    value={tasks.length}
+                    note="Euer gemeinsamer Überblick"
+                  />
+                  <Stat
+                    icon={Lightbulb}
+                    color="orange"
+                    label="Neue Ideen"
+                    value={tasks.filter((t) => t.status === "Idee").length}
+                    note="Bereit für den nächsten Schritt"
+                  />
+                  <Stat
+                    icon={CalendarDays}
+                    color="blue"
+                    label="In Planung"
+                    value={
+                      tasks.filter((t) => t.status === "In Planung").length
+                    }
+                    note="Alles zu seiner Zeit"
+                  />
+                  <Stat
+                    icon={CheckCircle2}
+                    color="green"
+                    label="Abgeschlossen"
+                    value={
+                      tasks.filter((t) => t.status === "Fertig (Hochgeladen)")
+                        .length
+                    }
+                    note="Mit verlinktem Ergebnis"
+                  />
+                </div>
+                <div className="content-toolbar">
+                  <div className="view-tabs">
+                    <button
+                      className={view === "board" ? "selected" : ""}
+                      onClick={() => setView("board")}
+                    >
+                      <LayoutGrid size={16} />
+                      Board
+                    </button>
+                    <button
+                      className={view === "calendar" ? "selected" : ""}
+                      onClick={() => setView("calendar")}
+                    >
+                      <CalendarDays size={16} />
+                      Kalender
                     </button>
                   </div>
-                  {!tasks.length && (
-                    <div className="starter">
-                      <div className="starter-icon">
-                        <Sparkles size={22} />
-                      </div>
-                      <div>
-                        <h3>Große Ideen brauchen einen Anfang.</h3>
-                        <p>
-                          Erstelle deine erste Aufgabe, wähle eine Kampagne und
-                          entwickle mit dem Script-Assistenten deinen nächsten
-                          Content.
-                        </p>
-                      </div>
-                      <button onClick={() => setEditing(blank())}>
-                        Loslegen <ArrowRight size={17} />
-                      </button>
+                  <div className="filters">
+                    <div className="search">
+                      <Search size={16} />
+                      <input
+                        placeholder="Inhalte durchsuchen…"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                      />
                     </div>
-                  )}
-                  <div className="board-footer">
-                    <span>
-                      <span className="live-dot" />
-                      Alles an einem Ort. Raum für deine Ideen.
-                    </span>
-                    <span>
-                      Made for your next big thing <Sparkles size={13} />
-                    </span>
+                    <select
+                      aria-label="Kampagne filtern"
+                      value={category}
+                      onChange={(e) => setCategory(e.target.value)}
+                    >
+                      <option>Alle Inhalte</option>
+                      {categories.map((c) => (
+                        <option key={c}>{c}</option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Nach Status filtern"
+                      value={filter}
+                      onChange={(e) => setFilter(e.target.value)}
+                    >
+                      <option>Alle Status</option>
+                      {statuses.map((s) => (
+                        <option key={s} value={s}>
+                          {statusNames[statuses.indexOf(s)]}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                </>
-              )}
-            </>
+                </div>
+                {view === "calendar" ? (
+                  <Calendar
+                    tasks={filtered}
+                    onEdit={(t) => {
+                      if (canEdit) setEditing(t);
+                      else notify(t.title + " · " + t.status);
+                    }}
+                    onNew={(date) => {
+                      if (canEdit)
+                        setEditing({
+                          ...blank(),
+                          spaceId: space.id,
+                          date: date + "T10:00",
+                          status: "In Planung",
+                        });
+                    }}
+                  />
+                ) : (
+                  <>
+                    <div className="section-title">
+                      <h2>
+                        Status-Board <span>{filtered.length}</span>
+                      </h2>
+                      <span>
+                        Status ändern → Karte wandert automatisch weiter.
+                      </span>
+                    </div>
+                    <div
+                      className="board-lanes-nav"
+                      aria-label="Zu Status springen"
+                    >
+                      {statuses.map((status, index) => (
+                        <button
+                          key={status}
+                          onClick={() => {
+                            setFilter("Alle Status");
+                            scrollToStatus(status);
+                          }}
+                        >
+                          <span className={"lane-dot " + colors[index]} />
+                          {statusNames[index]}
+                          <small>
+                            {tasks.filter((t) => t.status === status).length}
+                          </small>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="kanban-board">
+                      {statuses
+                        .filter((s) => filter === "Alle Status" || s === filter)
+                        .map((status, i) => (
+                          <section
+                            className="kanban-column"
+                            data-status={status}
+                            key={status}
+                            aria-label={status}
+                          >
+                            <div className="kanban-heading">
+                              <Badge status={status} />
+                              <span>
+                                {
+                                  filtered.filter((t) => t.status === status)
+                                    .length
+                                }
+                              </span>
+                            </div>
+                            <div className="kanban-cards">
+                              {filtered
+                                .filter((t) => t.status === status)
+                                .map((t) => (
+                                  <TaskCard
+                                    key={t.id}
+                                    task={t}
+                                    index={i}
+                                    canEdit={canEdit}
+                                    onEdit={() => setEditing(t)}
+                                    onStatus={(s) => changeStatus(t, s)}
+                                  />
+                                ))}
+                              {canEdit && (
+                                <button
+                                  className="column-add"
+                                  onClick={() =>
+                                    setEditing({
+                                      ...blank(),
+                                      spaceId: space.id,
+                                      status,
+                                    })
+                                  }
+                                >
+                                  <Plus size={16} />
+                                  Aufgabe hinzufügen
+                                </button>
+                              )}
+                              {!filtered.some((t) => t.status === status) && (
+                                <p className="column-empty">
+                                  Raum für den nächsten Schritt.
+                                </p>
+                              )}
+                            </div>
+                          </section>
+                        ))}
+                    </div>
+                    <div className="board-footer">
+                      <span>
+                        <span className="live-dot" />
+                        Geteilte Inhalte werden alle 15 Sekunden aktualisiert.
+                      </span>
+                      <span>Astro-Media · Ideen bewegen</span>
+                    </div>
+                  </>
+                )}
+              </>
+            )
           )}
         </div>
       </main>
-      {editing && (
+      {editing && space && canEdit && (
         <Editor
           task={editing}
+          space={space}
           categories={categories}
           onClose={() => setEditing(null)}
           onSave={save}
           onDelete={async () => {
             const r = await api("/tasks/" + editing.id, { method: "DELETE" });
-            setTasks(tasks.filter((t) => t.id !== editing.id));
+            setTasks((prev) => prev.filter((t) => t.id !== editing.id));
             setEditing(null);
-            notify(r.warning || "Aufgabe gelöscht");
+            notify(r.warning || "Aufgabe gelöscht.");
           }}
           existing={tasks.some((t) => t.id === editing.id)}
+        />
+      )}{" "}
+      {statusChange && (
+        <StatusDialog
+          task={statusChange.task}
+          status={statusChange.status}
+          onClose={() => setStatusChange(null)}
+          onSave={save}
         />
       )}{" "}
       {toast && (
@@ -512,60 +758,127 @@ function Stat({ icon: Icon, color, label, value, note }) {
     </div>
   );
 }
-function TaskCard({ task: t, index, onClick }) {
+function TaskCard({ task: t, index, canEdit, onEdit, onStatus }) {
+  const [open, setOpen] = useState(false);
   return (
-    <button className="task-card" onClick={onClick}>
-      <div className={"card-art art" + (index % 5)}>
-        <div className="art-grain" />
-        <div className="art-label">
-          {t.format === "Reel"
-            ? "MAKE IT"
-            : t.format === "Story"
-              ? "TELL YOUR"
-              : "CREATE"}
-          <br />
-          <em>{t.format === "Story" ? "STORY." : "HAPPEN."}</em>
-        </div>
-        <span className="art-circle" />
-        <span className="format-chip">
-          <Video size={12} />
-          {t.format}
-        </span>
-        <span className="art-star">
-          <Sparkles size={65} />
-        </span>
-      </div>
-      <div className="card-body">
-        <div className="card-category">
-          <span>{t.category || "OHNE KAMPAGNE"}</span>
-          <MoreHorizontal size={18} />
-        </div>
-        <h3>{t.title}</h3>
-        <p>
-          {t.description || "Eine gute Idee wartet darauf, erzählt zu werden."}
-        </p>
-        <Badge status={t.status} />
-        <div className="card-bottom">
-          <span>
-            <CalendarDays size={14} />
-            {t.date
-              ? new Date(t.date).toLocaleDateString("de-DE", {
-                  day: "numeric",
-                  month: "short",
-                })
-              : "Noch kein Termin"}
-          </span>
-          <span className="platform">
-            {t.platform === "Instagram" ? (
-              <Instagram size={14} />
-            ) : (
-              <Video size={14} />
-            )}{" "}
+    <article className={"task-card kanban-task " + (open ? "expanded" : "")}>
+      <button
+        className="card-toggle"
+        aria-label={"Status und Details: " + t.title}
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <div className={"card-art art" + (index % 5)}>
+          {t.assetIds?.[0] ? (
+            <img
+              src={"/api/assets/" + t.assetIds[0]}
+              alt="Aufgabenmotiv"
+              loading="lazy"
+            />
+          ) : (
+            <>
+              <div className="art-label">
+                {t.format.toUpperCase()}
+                <br />
+                <em>IN ORBIT.</em>
+              </div>
+              <span className="art-star">
+                <Sparkles size={45} />
+              </span>
+            </>
+          )}
+          <span className="format-chip">
+            <Video size={12} />
             {t.platform}
           </span>
         </div>
-      </div>
-    </button>
+        <div className="card-body">
+          <div className="card-category">
+            <span>{t.category || "OHNE KAMPAGNE"}</span>
+            <ChevronDown size={16} />
+          </div>
+          <h3>{t.title}</h3>
+          <p>
+            {t.description ||
+              "Eine gute Idee wartet auf ihren nächsten Schritt."}
+          </p>
+          <div className="card-bottom">
+            <span>
+              <CalendarDays size={13} />
+              {t.date
+                ? new Date(t.date).toLocaleDateString("de-DE", {
+                    day: "numeric",
+                    month: "short",
+                  })
+                : "Noch kein Termin"}
+            </span>
+            <span>{open ? "Schließen" : "Status & Details"}</span>
+          </div>
+        </div>
+      </button>
+      {open && (
+        <div className="quick-actions">
+          <label>
+            Status
+            <select
+              aria-label={"Status für " + t.title}
+              disabled={!canEdit}
+              value={t.status}
+              onChange={(e) => onStatus(e.target.value)}
+            >
+              {statuses.map((s) => (
+                <option key={s} value={s}>
+                  {statusNames[statuses.indexOf(s)]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {t.exampleUrl && (
+            <a href={t.exampleUrl} target="_blank" rel="noreferrer">
+              💭 Beispiel ansehen <ArrowUpRight size={13} />
+            </a>
+          )}
+          {t.completionUrl && (
+            <a href={t.completionUrl} target="_blank" rel="noreferrer">
+              ✅ Ergebnis öffnen <ArrowUpRight size={13} />
+            </a>
+          )}
+          {t.script && (
+            <details>
+              <summary>📝 Videoscript ansehen</summary>
+              <pre>{t.script}</pre>
+            </details>
+          )}
+          {t.notes && (
+            <details>
+              <summary>🎬 Produktionsnotizen</summary>
+              <p>{t.notes}</p>
+            </details>
+          )}
+          {t.assetIds?.length > 0 && (
+            <div className="card-media-links">
+              {t.assetIds.map((id) => (
+                <a
+                  key={id}
+                  href={"/api/assets/" + id}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <img src={"/api/assets/" + id} alt="Angehängtes Medium" />
+                </a>
+              ))}
+            </div>
+          )}
+          {canEdit ? (
+            <button className="secondary" onClick={onEdit}>
+              Inhalt & Script bearbeiten <ArrowUpRight size={14} />
+            </button>
+          ) : (
+            <small>Dieser Bereich ist nur zum Ansehen freigegeben.</small>
+          )}
+        </div>
+      )}
+    </article>
   );
 }
 function Auth({ onLogin }) {
@@ -581,7 +894,7 @@ function Auth({ onLogin }) {
           <span className="brand-icon">
             <Clapperboard />
           </span>
-          studio.
+          Astro-Media
         </a>
         <div>
           <span className="eyebrow">DEIN RAUM FÜR GROSSE IDEEN</span>
@@ -614,12 +927,12 @@ function Auth({ onLogin }) {
             </span>
           </div>
         </div>
-        <small>Dein Marketing. Dein Rhythmus. Dein Studio.</small>
+        <small>Dein Marketing. Dein Rhythmus. Astro-Media.</small>
       </div>
       <div className="auth-form">
         <div className="auth-box">
           <span className="eyebrow">LET’S MAKE SOMETHING GREAT</span>
-          <h2>{register ? "Dein Studio wartet." : "Willkommen zurück."}</h2>
+          <h2>{register ? "Dein Orbit wartet." : "Willkommen zurück."}</h2>
           <p>
             {register
               ? "Erstelle deinen persönlichen Marketing-Workspace."
@@ -683,7 +996,7 @@ function Auth({ onLogin }) {
             </button>
           </form>
           <p className="auth-switch">
-            {register ? "Schon einen Account?" : "Neu bei Studio?"}{" "}
+            {register ? "Schon einen Account?" : "Neu bei Astro-Media?"}{" "}
             <button
               onClick={() => {
                 setRegister(!register);
@@ -702,8 +1015,19 @@ function Auth({ onLogin }) {
     </div>
   );
 }
-function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
+function Editor({
+  task,
+  space,
+  categories,
+  onClose,
+  onSave,
+  onDelete,
+  existing,
+}) {
   const [t, setT] = useState({
+    exampleUrl: "",
+    completionUrl: "",
+    assetIds: [],
     duration: "30–45 Sekunden",
     tone: "Nahbar & direkt",
     owner: "",
@@ -876,6 +1200,13 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
               setError("Bitte lege einen Termin fest.");
               return;
             }
+            if (t.status === "Fertig (Hochgeladen)" && !t.completionUrl) {
+              setTab("planning");
+              setError(
+                "Bitte verlinke das Ergebnis, bevor du die Aufgabe abschließt.",
+              );
+              return;
+            }
             setBusy(true);
             setError("");
             try {
@@ -900,6 +1231,67 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                     onChange={(e) => field("title", e.target.value)}
                   />
                 </label>
+                <details className="optional-section reference-section">
+                  <summary>
+                    Beispiel aus einem Link erstellen <span>Optional</span>
+                  </summary>
+                  <label>
+                    Beispiellink
+                    <input
+                      type="url"
+                      maxLength={1000}
+                      value={t.exampleUrl}
+                      onChange={(e) => field("exampleUrl", e.target.value)}
+                      placeholder="https://www.instagram.com/reel/…"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      try {
+                        const url = new URL(t.exampleUrl);
+                        if (
+                          !["http:", "https:"].includes(url.protocol) ||
+                          url.username ||
+                          url.password
+                        )
+                          throw Error();
+                        setT((prev) => ({
+                          ...prev,
+                          title:
+                            prev.title || "Inspiration von " + url.hostname,
+                          description:
+                            prev.description ||
+                            "Beispiel für diesen Content: " + url.href,
+                          exampleUrl: url.href,
+                        }));
+                        setError("");
+                      } catch {
+                        setError(
+                          "Bitte einen gültigen HTTP(S)-Beispiellink eingeben.",
+                        );
+                      }
+                    }}
+                  >
+                    <Link size={15} />
+                    Als Beispiel übernehmen
+                  </button>
+                  {/^https?:\/\//.test(t.exampleUrl) && (
+                    <a
+                      className="reference-preview"
+                      href={t.exampleUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      💭 Referenz öffnen <ArrowUpRight size={15} />
+                    </a>
+                  )}
+                  <small className="template-note">
+                    Der Link wird als Referenz gespeichert. Inhalte werden nicht
+                    automatisch kopiert.
+                  </small>
+                </details>
                 <div className="field-heading">
                   Schnellstart{" "}
                   <span>Optional · setzt Plattform und Format</span>
@@ -968,6 +1360,18 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                     ))}
                   </datalist>
                 </label>
+                <details className="optional-section">
+                  <summary>
+                    Fotos & Grafiken <span>{t.assetIds.length} verknüpft</span>
+                  </summary>
+                  <MediaLibrary
+                    api={api}
+                    space={space}
+                    selected={t.assetIds}
+                    onSelect={(ids) => field("assetIds", ids)}
+                    notify={setError}
+                  />
+                </details>
                 <div className="editor-next">
                   <span>
                     <Lightbulb size={17} />
@@ -1023,6 +1427,16 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                     type="datetime-local"
                     value={t.date}
                     onChange={(e) => field("date", e.target.value)}
+                  />
+                </label>
+                <label>
+                  Ergebnis-Link {t.status === "Fertig (Hochgeladen)" ? "*" : ""}
+                  <input
+                    type="url"
+                    maxLength={1000}
+                    value={t.completionUrl}
+                    onChange={(e) => field("completionUrl", e.target.value)}
+                    placeholder="https://… / dein veröffentlichter Inhalt"
                   />
                 </label>
                 <div className="date-shortcuts">
@@ -1470,15 +1884,15 @@ function SettingsPage({ connected, setConnected, notify }) {
           </span>
           <div>
             <strong>
-              Studio <span>APP</span>
+              Astro-Media <span>APP</span>
             </strong>
             <div className="preview-embed">
-              <h3>✓ Studio ist verbunden</h3>
+              <h3>✓ Astro-Media ist verbunden</h3>
               <p>
                 Die Testnachricht ist angekommen! Deine Aufgaben und
                 Statusänderungen erscheinen hier.
               </p>
-              <small>STUDIO • Verbindungstest</small>
+              <small>ASTRO-MEDIA • Verbindungstest</small>
             </div>
           </div>
         </div>
