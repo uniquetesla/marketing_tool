@@ -205,9 +205,10 @@ test("Discord creates one message and edits the stored message on changes", asyn
     ).status,
     200,
   );
-  assert.deepEqual((await call("/settings", "GET", undefined, cookie)).body, {
-    connected: true,
-  });
+  const settings = (await call("/settings", "GET", undefined, cookie)).body;
+  assert.equal(settings.connected, true);
+  assert.ok(settings.testedAt);
+  assert.equal(settings.webhook, undefined);
   const task = {
     id: "discord-task",
     title: "Discord test",
@@ -242,15 +243,62 @@ test("Discord creates one message and edits the stored message on changes", asyn
     .trim()
     .split("\n")
     .map(JSON.parse);
+  assert.equal(events[0].body.embeds[0].title, "✓ Studio ist verbunden");
   assert.equal(events[0].method, "POST");
+  assert.equal(events[1].method, "POST");
   assert.ok(events[0].url.endsWith("?wait=true"));
-  assert.equal(events[1].method, "PATCH");
-  assert.ok(events[1].url.endsWith("/messages/987654321"));
-  assert.equal(events[1].body.embeds[0].fields[0].value, "In Bearbeitung");
-  assert.deepEqual(events[1].body.allowed_mentions, { parse: [] });
+  assert.equal(events[2].method, "PATCH");
+  assert.ok(events[2].url.endsWith("/messages/987654321"));
+  assert.equal(events[2].body.embeds[0].fields[0].value, "In Bearbeitung");
+  assert.deepEqual(events[2].body.allowed_mentions, { parse: [] });
   assert.ok(
-    events[1].body.embeds[0].fields.some((f) => f.name === "Videoscript"),
+    events[2].body.embeds[0].fields.some((f) => f.name === "Videoscript"),
   );
+  const failedReplacement = await call(
+    "/settings",
+    "PUT",
+    { webhook: "https://discord.com/api/webhooks/123456/invalid_token" },
+    cookie,
+  );
+  assert.equal(failedReplacement.status, 502);
+  assert.match(failedReplacement.body.error, /nicht mehr/);
+  assert.equal(
+    (await call("/settings", "GET", undefined, cookie)).body.connected,
+    true,
+  );
+  const repeatTest = await call("/discord/test", "POST", {}, cookie);
+  assert.equal(repeatTest.status, 200);
+  assert.ok(repeatTest.body.testedAt);
+  assert.equal(
+    (
+      await call(
+        "/tasks/discord-task",
+        "PUT",
+        {
+          ...task,
+          status: "In Planung",
+          date: "2026-12-20T10:00",
+          owner: "Anna",
+          notes: "Drehort Berlin",
+          duration: "15 Sekunden",
+          tone: "Nahbar & direkt",
+          checklist: ["Script finalisiert"],
+        },
+        cookie,
+      )
+    ).body.discord,
+    "Synchronisiert",
+  );
+  const afterFailedReplacement = readFileSync(
+    path.join(dir, "discord.log"),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map(JSON.parse)
+    .at(-1);
+  assert.equal(afterFailedReplacement.method, "PATCH");
+  assert.ok(afterFailedReplacement.url.includes("/test_token/messages/"));
   assert.equal(
     (await call("/tasks/discord-task", "DELETE", undefined, cookie)).status,
     200,
@@ -262,4 +310,26 @@ test("Discord creates one message and edits the stored message on changes", asyn
       .at(-1),
   );
   assert.equal(last.method, "DELETE");
+});
+
+test("Discord failures never claim a connection or discard existing tasks", async () => {
+  const login = await call("/auth/register", "POST", {
+    email: "failure@example.com",
+    password: "test-failure-password",
+  });
+  const cookie = login.cookie;
+  const failed = await call(
+    "/settings",
+    "PUT",
+    { webhook: "https://discord.com/api/webhooks/123456/denied_token" },
+    cookie,
+  );
+  assert.equal(failed.status, 502);
+  assert.match(failed.body.error, /Netzwerkfreigabe/);
+  assert.equal(
+    (await call("/settings", "GET", undefined, cookie)).body.connected,
+    false,
+  );
+  assert.equal((await call("/discord/test", "POST", {}, cookie)).status, 400);
+  assert.equal((await call("/discord/sync", "POST", {}, cookie)).status, 400);
 });

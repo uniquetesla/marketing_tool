@@ -311,7 +311,9 @@ function App() {
                       : category === "Alle Inhalte"
                         ? "Deine nächste große Idee."
                         : category}
-                    <span className="heading-dot">✳︎</span>
+                    <span className="heading-dot">
+                      <Sparkles size={27} />
+                    </span>
                   </h1>
                   <p>
                     Von der ersten Idee bis zum Upload. Hier wird dein Content
@@ -529,7 +531,9 @@ function TaskCard({ task: t, index, onClick }) {
           <Video size={12} />
           {t.format}
         </span>
-        <span className="art-star">✳︎</span>
+        <span className="art-star">
+          <Sparkles size={65} />
+        </span>
       </div>
       <div className="card-body">
         <div className="card-category">
@@ -699,42 +703,48 @@ function Auth({ onLogin }) {
   );
 }
 function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
+  const [t, setT] = useState({
+    duration: "30–45 Sekunden",
+    tone: "Nahbar & direkt",
+    owner: "",
+    notes: "",
+    checklist: [],
+    ...task,
+  });
+  const [tab, setTab] = useState("details"),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [confirm, setConfirm] = useState(false),
+    [replaceScript, setReplaceScript] = useState(false);
+  const field = (key, value) => setT((prev) => ({ ...prev, [key]: value }));
   useEffect(() => {
     const previous = document.activeElement;
+    const old = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     function keys(e) {
       if (e.key === "Escape") onClose();
       if (e.key === "Tab") {
         const els = [
           ...document.querySelectorAll(
-            ".editor button:not([disabled]),.editor input,.editor select,.editor textarea",
+            ".editor button:not([disabled]),.editor input,.editor select,.editor textarea,.editor summary",
           ),
         ].filter((el) => el.offsetParent !== null);
-        const first = els[0],
-          last = els.at(-1);
-        if (e.shiftKey && document.activeElement === first) {
+        if (e.shiftKey && document.activeElement === els[0]) {
           e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
+          els.at(-1)?.focus();
+        } else if (!e.shiftKey && document.activeElement === els.at(-1)) {
           e.preventDefault();
-          first?.focus();
+          els[0]?.focus();
         }
       }
     }
     document.addEventListener("keydown", keys);
-    const old = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     return () => {
-      document.removeEventListener("keydown", keys);
       document.body.style.overflow = old;
+      document.removeEventListener("keydown", keys);
       previous?.focus();
     };
   }, []);
-  const [t, setT] = useState({ ...task }),
-    [tab, setTab] = useState("details"),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [confirm, setConfirm] = useState(false);
-  const field = (key, value) => setT((prev) => ({ ...prev, [key]: value }));
   const select = (key, label, options) => (
     <label>
       {label}
@@ -749,18 +759,57 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
       </select>
     </label>
   );
+  const quickDate = (days) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    d.setHours(10, 0, 0, 0);
+    const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, 16);
+    setT((prev) => ({ ...prev, date: local, status: "In Planung" }));
+  };
   function generate() {
+    if (t.script && !replaceScript) {
+      setReplaceScript(true);
+      return;
+    }
+    setReplaceScript(false);
+    const title = t.title || "deinem Thema";
     const hooks = {
-      "Problem & Lösung": `Kennst du das: ${t.audience || "deine Zielgruppe"} möchte ${t.goal.toLowerCase()}, aber weiß nicht, wo anfangen?`,
-      "Überraschender Fakt": `Die meisten unterschätzen diesen einen Punkt bei „${t.title || "diesem Thema"}“.`,
-      "Vorher & Nachher": `Von der ersten Herausforderung zum sichtbaren Ergebnis – so geht’s bei „${t.title || "deinem Thema"}“.`,
-      "3 schnelle Tipps": `Drei Tipps zu „${t.title || "deinem Thema"}“, die du heute noch umsetzen kannst.`,
+      "Problem & Lösung": `Kennst du das? Bei „${title}“ stehst du immer wieder vor derselben Herausforderung. Das kannst du ändern.`,
+      "Überraschender Fakt": `Bei „${title}“ wird dieser eine Punkt oft übersehen. [Ergänze einen belegbaren Fakt.]`,
+      "Vorher & Nachher": `Vorher: [konkrete Ausgangslage]. Nachher: [echtes Ergebnis]. So gelingt der Weg bei „${title}“.`,
+      "3 schnelle Tipps": `Drei Tipps zu „${title}“, die du heute noch umsetzen kannst.`,
     };
+    const value = {
+      "Reichweite aufbauen":
+        "Zeige einen überraschenden, leicht teilbaren Tipp.",
+      "Vertrauen stärken":
+        "Zeige deinen Prozess und ein nachvollziehbares Beispiel.",
+      "Produkt erklären":
+        "Demonstriere eine Funktion und ihren konkreten Nutzen.",
+      "Leads gewinnen": "Zeige das Problem und einen ersten Lösungsweg.",
+      "Community aktivieren":
+        "Teile deine Sicht und stelle eine konkrete Frage.",
+    }[t.goal];
+    const short = t.duration === "15 Sekunden",
+      long = t.duration === "60–90 Sekunden";
+    const times = short
+      ? ["0–2", "2–4", "4–10", "10–12", "12–15"]
+      : long
+        ? ["0–5", "5–15", "15–55", "55–75", "75–90"]
+        : ["0–3", "3–8", "8–25", "25–35", "35–45"];
     field(
       "script",
-      `HOOK · 0–3 SEKUNDEN\n${hooks[t.hook]}\n[Zeige ein starkes Bild und blende die Kernaussage als Text ein.]\n\nPROBLEM · 3–8 SEKUNDEN\n${t.description || "[Beschreibe ein konkretes Problem deiner Zielgruppe in einem Satz.]"}\n\nMEHRWERT · 8–25 SEKUNDEN\n1. [Zeige einen konkreten, sofort umsetzbaren Schritt.]\n2. [Erkläre den Nutzen anhand eines Beispiels.]\n3. [Gib einen zusätzlichen Tipp, der einen häufigen Fehler vermeidet.]\n\nBEWEIS · 25–35 SEKUNDEN\n[Ergänze ein echtes Ergebnis, eine Demonstration oder eine Kundenstimme. Keine unbelegten Versprechen.]\n\nCALL TO ACTION · 35–40 SEKUNDEN\n${t.cta}.\n[Blende die Handlungsaufforderung ein und halte das Schlussbild kurz stehen.]`,
+      `BRIEFING\n${t.platform} · ${t.format} · ${t.duration}\nZiel: ${t.goal} · Ton: ${t.tone}\nZielgruppe: ${t.audience || "[Beschreibe deine Zielgruppe]"}\n\nHOOK · ${times[0]} SEKUNDEN\n${hooks[t.hook]}\n[Bild: Starker Einstieg. Kernaussage als Texteinblendung.]\n\nPROBLEM · ${times[1]} SEKUNDEN\n${t.description || "[Beschreibe das konkrete Problem deiner Zielgruppe in einem Satz.]"}\n\nMEHRWERT · ${times[2]} SEKUNDEN\n${value}\n${short ? "[Ein praktischer Schritt, direkt demonstriert.]" : "1. [Konkreter, sofort umsetzbarer Schritt.]\n2. [Nutzen anhand eines Beispiels zeigen.]\n3. [Häufigen Fehler und besseren Weg erklären.]"}\n\nBEWEIS · ${times[3]} SEKUNDEN\n[Zeige ein echtes Ergebnis, eine Demonstration oder eine freigegebene Kundenstimme. Keine unbelegten Versprechen.]\n\nCALL TO ACTION · ${times[4]} SEKUNDEN\n${t.cta}.\n[Bild: Handlungsaufforderung einblenden. Ruhiges Schlussbild.]`,
     );
   }
+  const presets = [
+    ["Reel / Short", "Instagram", "Reel"],
+    ["TikTok", "TikTok", "Video"],
+    ["YouTube", "YouTube", "Video"],
+    ["Carousel", "Instagram", "Carousel"],
+  ];
   return (
     <div
       className="modal-backdrop"
@@ -776,10 +825,15 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
       >
         <div className="editor-header">
           <div>
-            <span className="eyebrow">CONTENT STUDIO</span>
+            <span className="eyebrow">DEINE IDEE. DEIN NÄCHSTER SCHRITT.</span>
             <h2>
-              {existing ? "Deine Idee, im Detail." : "Eine neue Idee beginnt."}
+              {existing
+                ? "Content weiterentwickeln"
+                : "Was möchtest du erschaffen?"}
             </h2>
+            <p className="editor-subtitle">
+              Ein Titel genügt zum Start. Alles Weitere wächst mit deiner Idee.
+            </p>
           </div>
           <button
             className="icon-button"
@@ -790,20 +844,24 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
           </button>
         </div>
         <div className="editor-tabs">
-          <button
-            className={tab === "details" ? "selected" : ""}
-            onClick={() => setTab("details")}
-          >
-            <LayoutGrid size={16} />
-            Aufgabe & Planung
-          </button>
-          <button
-            className={tab === "script" ? "selected" : ""}
-            onClick={() => setTab("script")}
-          >
-            <Sparkles size={16} />
-            Script-Assistent
-          </button>
+          {[
+            ["details", Lightbulb, "Idee & Inhalt"],
+            ["planning", CalendarDays, "Aufgabe & Planung"],
+            ["script", Sparkles, "Script-Assistent"],
+          ].map(([id, Icon, label], i) => (
+            <button
+              key={id}
+              className={tab === id ? "selected" : ""}
+              onClick={() => {
+                setTab(id);
+                setError("");
+              }}
+            >
+              <span className="step-number">{i + 1}</span>
+              <Icon size={16} />
+              {label}
+            </button>
+          ))}
         </div>
         <form
           onSubmit={async (e) => {
@@ -814,7 +872,7 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
               return;
             }
             if (t.status === "In Planung" && !t.date) {
-              setTab("details");
+              setTab("planning");
               setError("Bitte lege einen Termin fest.");
               return;
             }
@@ -836,34 +894,47 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                   Titel deiner Idee
                   <input
                     autoFocus
-                    placeholder="Was möchtest du erzählen?"
+                    placeholder="z. B. 3 Fehler, die deinen Content ausbremsen"
                     maxLength={200}
                     value={t.title}
                     onChange={(e) => field("title", e.target.value)}
                   />
                 </label>
+                <div className="field-heading">
+                  Schnellstart{" "}
+                  <span>Optional · setzt Plattform und Format</span>
+                </div>
+                <div className="preset-grid">
+                  {presets.map(([label, platform, format]) => (
+                    <button
+                      type="button"
+                      key={label}
+                      aria-pressed={
+                        t.platform === platform && t.format === format
+                      }
+                      className={
+                        t.platform === platform && t.format === format
+                          ? "preset selected"
+                          : "preset"
+                      }
+                      onClick={() =>
+                        setT((prev) => ({ ...prev, platform, format }))
+                      }
+                    >
+                      <Video size={17} />
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 <label>
                   Beschreibung
                   <textarea
                     rows={3}
-                    placeholder="Worum geht es? Was soll dein Content bewirken?"
+                    maxLength={12000}
+                    placeholder="Dein Gedanke, der wichtigste Nutzen oder ein erster Stichpunkt…"
                     value={t.description}
                     onChange={(e) => field("description", e.target.value)}
                   />
-                </label>
-                <label>
-                  Kampagne / Übermenü
-                  <input
-                    list="campaigns"
-                    placeholder="z. B. Produktlaunch, Behind the Scenes…"
-                    value={t.category}
-                    onChange={(e) => field("category", e.target.value)}
-                  />
-                  <datalist id="campaigns">
-                    {categories.map((c) => (
-                      <option key={c}>{c}</option>
-                    ))}
-                  </datalist>
                 </label>
                 <div className="form-row">
                   {select("platform", "Plattform", [
@@ -882,25 +953,151 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                     "Beitrag",
                   ])}
                 </div>
-                <div className="form-row">
-                  {select("status", "Status", statuses)}
-                  <label>
-                    Veröffentlichungstermin
-                    {t.status === "In Planung" ? " *" : ""}
-                    <input
-                      type="datetime-local"
-                      value={t.date}
-                      onChange={(e) => field("date", e.target.value)}
-                    />
-                  </label>
+                <label>
+                  Kampagne / Übermenü
+                  <input
+                    list="campaigns"
+                    maxLength={200}
+                    placeholder="Bestehende wählen oder neue Kampagne eingeben"
+                    value={t.category}
+                    onChange={(e) => field("category", e.target.value)}
+                  />
+                  <datalist id="campaigns">
+                    {categories.map((c) => (
+                      <option key={c}>{c}</option>
+                    ))}
+                  </datalist>
+                </label>
+                <div className="editor-next">
+                  <span>
+                    <Lightbulb size={17} />
+                    Du kannst deine Idee schon jetzt speichern.
+                  </span>
+                  <button type="button" onClick={() => setTab("planning")}>
+                    Planung ergänzen <ArrowRight size={16} />
+                  </button>
+                </div>
+              </>
+            ) : tab === "planning" ? (
+              <>
+                <div className="script-intro">
+                  <span className="stat-icon blue">
+                    <CalendarDays size={20} />
+                  </span>
+                  <div>
+                    <h3>Von „irgendwann“ zu einem Plan.</h3>
+                    <p>
+                      Status, Termin und Produktion – so detailliert, wie du es
+                      brauchst.
+                    </p>
+                  </div>
+                </div>
+                <div className="status-field">
+                  <div className="field-heading">Status</div>
+                  <div
+                    className="status-options"
+                    role="group"
+                    aria-label="Status"
+                  >
+                    {statuses.map((status) => (
+                      <button
+                        type="button"
+                        key={status}
+                        className={
+                          t.status === status
+                            ? "status-option selected"
+                            : "status-option"
+                        }
+                        aria-pressed={t.status === status}
+                        onClick={() => field("status", status)}
+                      >
+                        <Badge status={status} />
+                        {t.status === status && <Check size={14} />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label>
+                  Veröffentlichungstermin{t.status === "In Planung" ? " *" : ""}
+                  <input
+                    type="datetime-local"
+                    value={t.date}
+                    onChange={(e) => field("date", e.target.value)}
+                  />
+                </label>
+                <div className="date-shortcuts">
+                  <button type="button" onClick={() => quickDate(1)}>
+                    Morgen · 10 Uhr
+                  </button>
+                  <button type="button" onClick={() => quickDate(7)}>
+                    In einer Woche · 10 Uhr
+                  </button>
+                  {t.date && (
+                    <button type="button" onClick={() => field("date", "")}>
+                      Termin entfernen
+                    </button>
+                  )}
                 </div>
                 <div className="hint">
                   <CalendarDays size={18} />
                   <p>
-                    Mit „In Planung“ wird ein Termin verpflichtend. Dein Content
-                    erscheint automatisch im Kalender.
+                    „In Planung“ benötigt einen Termin. Du kannst auch für
+                    andere Status einen Termin im Kalender hinterlegen.
                   </p>
                 </div>
+                <details className="optional-section">
+                  <summary>
+                    Produktion & Notizen <span>Optional</span>
+                  </summary>
+                  <label>
+                    Verantwortlich
+                    <input
+                      maxLength={120}
+                      value={t.owner}
+                      onChange={(e) => field("owner", e.target.value)}
+                      placeholder="Name oder Team"
+                    />
+                  </label>
+                  <label>
+                    Produktionsnotizen
+                    <textarea
+                      rows={3}
+                      maxLength={12000}
+                      value={t.notes}
+                      onChange={(e) => field("notes", e.target.value)}
+                      placeholder="Drehort, Requisiten, Links, Schnittideen…"
+                    />
+                  </label>
+                  <div className="field-heading">
+                    Produktions-Checkliste{" "}
+                    <span>{t.checklist.length}/5 erledigt</span>
+                  </div>
+                  <div className="production-checklist">
+                    {[
+                      "Script finalisiert",
+                      "Aufnahme erledigt",
+                      "Schnitt abgeschlossen",
+                      "Untertitel & Cover erstellt",
+                      "Freigabe erhalten",
+                    ].map((item) => (
+                      <label key={item}>
+                        <input
+                          type="checkbox"
+                          checked={t.checklist.includes(item)}
+                          onChange={(e) =>
+                            field(
+                              "checklist",
+                              e.target.checked
+                                ? [...t.checklist, item]
+                                : t.checklist.filter((x) => x !== item),
+                            )
+                          }
+                        />
+                        {item}
+                      </label>
+                    ))}
+                  </div>
+                </details>
               </>
             ) : (
               <>
@@ -909,9 +1106,10 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                     <Sparkles size={20} />
                   </span>
                   <div>
-                    <h3>Aus einer Idee wird eine Geschichte.</h3>
+                    <h3>Eine klare Struktur. Deine eigene Stimme.</h3>
                     <p>
-                      Wähle deine Richtung. Wir geben deinem Script Struktur.
+                      Vier Entscheidungen machen aus deiner Idee ein
+                      drehfertiges Gerüst.
                     </p>
                   </div>
                 </div>
@@ -933,11 +1131,25 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                 <label>
                   Für wen ist der Content?
                   <input
+                    maxLength={500}
                     placeholder="z. B. Gründer, die ihr Marketing selbst machen"
                     value={t.audience}
                     onChange={(e) => field("audience", e.target.value)}
                   />
                 </label>
+                <div className="form-row">
+                  {select("duration", "Videolänge", [
+                    "15 Sekunden",
+                    "30–45 Sekunden",
+                    "60–90 Sekunden",
+                  ])}
+                  {select("tone", "Tonalität", [
+                    "Nahbar & direkt",
+                    "Informativ & sachlich",
+                    "Humorvoll & locker",
+                    "Inspirierend & motivierend",
+                  ])}
+                </div>
                 {select("cta", "Was soll danach passieren?", [
                   "Für mehr Tipps folgen",
                   "Beitrag speichern",
@@ -948,22 +1160,34 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                 ])}
                 <button type="button" className="generate" onClick={generate}>
                   <Sparkles size={17} />
-                  {t.script
-                    ? "Script-Vorlage neu erstellen"
-                    : "Script-Vorlage erstellen"}
+                  {replaceScript
+                    ? "Vorhandenes Script wirklich ersetzen?"
+                    : t.script
+                      ? "Neue Script-Vorlage erstellen"
+                      : "Script-Vorlage erstellen"}
                 </button>
+                {replaceScript && (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => setReplaceScript(false)}
+                  >
+                    Vorhandenes Script behalten
+                  </button>
+                )}
                 <small className="template-note">
-                  Strukturierte Vorlage ohne externe KI. Ersetze Platzhalter
-                  durch deine eigenen Beispiele.
+                  Deine Auswahl bestimmt Aufbau, Timing und Schwerpunkt. Fülle
+                  die Platzhalter mit eigenen Beispielen.
                 </small>
                 <label>
                   Dein Videoscript
                   <textarea
                     className="script-text"
-                    rows={14}
-                    placeholder="Deine Geschichte beginnt hier…"
+                    rows={12}
+                    maxLength={12000}
                     value={t.script}
                     onChange={(e) => field("script", e.target.value)}
+                    placeholder="Erstelle eine Vorlage oder schreibe direkt los…"
                   />
                 </label>
                 {t.script && (
@@ -975,9 +1199,7 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                         await navigator.clipboard.writeText(t.script);
                         setError("Script kopiert.");
                       } catch {
-                        setError(
-                          "Kopieren nicht möglich. Markiere den Text manuell.",
-                        );
+                        setError("Bitte Text markieren und manuell kopieren.");
                       }
                     }}
                   >
@@ -1017,7 +1239,7 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
                 {confirm ? "Wirklich löschen?" : "Löschen"}
               </button>
             ) : (
-              <span />
+              <span className="save-note">Nur der Titel ist Pflicht</span>
             )}
             <div>
               <button type="button" className="secondary" onClick={onClose}>
@@ -1025,7 +1247,7 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
               </button>
               <button className="primary" disabled={busy}>
                 <Check size={16} />
-                {busy ? "Wird gespeichert…" : "Aufgabe speichern"}
+                {busy ? "Speichern…" : "Aufgabe speichern"}
               </button>
             </div>
           </footer>
@@ -1036,57 +1258,96 @@ function Editor({ task, categories, onClose, onSave, onDelete, existing }) {
 }
 function SettingsPage({ connected, setConnected, notify }) {
   const [url, setUrl] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [feedback, setFeedback] = useState(null),
+    [testedAt, setTestedAt] = useState(null);
+  useEffect(() => {
+    api("/settings")
+      .then((s) => setTestedAt(s.testedAt))
+      .catch((e) => setFeedback({ ok: false, text: e.message }));
+  }, []);
+  async function testSaved() {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const r = await api("/discord/test", { method: "POST" });
+      setTestedAt(r.testedAt);
+      setFeedback({
+        ok: true,
+        text: "Testnachricht von Discord bestätigt. Schau in deinen Kanal!",
+      });
+    } catch (e) {
+      setFeedback({ ok: false, text: e.message });
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <>
       <div className="page-heading">
         <div>
           <div className="eyebrow">ALLES GUT VERBUNDEN</div>
           <h1>
-            Einstellungen<span className="heading-dot">✳︎</span>
+            Einstellungen
+            <span className="heading-dot">
+              <Sparkles size={27} />
+            </span>
           </h1>
           <p>Dein Workspace. Deine Verbindungen.</p>
         </div>
       </div>
       <section className="settings-card">
         <div className="settings-title">
-          <span className="discord-logo">◒</span>
+          <span className="discord-logo">
+            <Send size={27} />
+          </span>
           <div>
             <h2>Discord-Integration</h2>
-            <p>Bring deine Content-Planung dorthin, wo dein Team ist.</p>
+            <p>Deine Planung. Direkt im Team-Chat.</p>
           </div>
           <span className={"badge " + (connected ? "green" : "gray")}>
             <i />
-            {connected ? "Verbunden" : "Nicht verbunden"}
+            {connected
+              ? testedAt
+                ? "Verbindung getestet"
+                : "Webhook hinterlegt"
+              : "Nicht verbunden"}
           </span>
         </div>
         <div className="steps">
           <p>
-            <b>01</b>Öffne in Discord die Kanaleinstellungen → Integrationen →
-            Webhooks.
+            <b>01</b>Öffne die Einstellungen eines Discord-Textkanals →
+            Integrationen → Webhooks.
           </p>
           <p>
-            <b>02</b>Erstelle einen Webhook und kopiere die Webhook-URL.
+            <b>02</b>Erstelle einen Webhook und kopiere die vollständige
+            Webhook-URL.
           </p>
           <p>
-            <b>03</b>Füge die URL hier ein. Neue und bearbeitete Aufgaben werden
-            synchronisiert.
+            <b>03</b>Verbinde deinen Kanal. Wir senden sofort eine sichtbare
+            Testnachricht.
           </p>
         </div>
         <form
           onSubmit={async (e) => {
             e.preventDefault();
             setBusy(true);
+            setFeedback(null);
             try {
               const r = await api("/settings", {
                 method: "PUT",
                 body: JSON.stringify({ webhook: url }),
               });
               setConnected(r.connected);
+              setTestedAt(r.testedAt);
               setUrl("");
-              notify("Discord-Verbindung gespeichert.");
+              setFeedback({
+                ok: true,
+                text: "Verbunden! Discord hat die Testnachricht bestätigt. Neue Aufgaben werden ab jetzt automatisch übertragen.",
+              });
+              notify("Discord verbunden · Testnachricht gesendet.");
             } catch (e) {
-              notify(e.message);
+              setFeedback({ ok: false, text: e.message });
             } finally {
               setBusy(false);
             }
@@ -1099,18 +1360,21 @@ function SettingsPage({ connected, setConnected, notify }) {
               autoComplete="off"
               placeholder={
                 connected
-                  ? "Neue Webhook-URL zum Ersetzen einfügen"
+                  ? "Neue URL zum Wechseln des Kanals einfügen"
                   : "https://discord.com/api/webhooks/…"
               }
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               required
+              disabled={busy}
             />
           </label>
           <div className="settings-actions">
             <button className="primary" disabled={busy}>
               <Link size={16} />
-              {busy ? "Speichern…" : "Verbindung speichern"}
+              {busy
+                ? "Discord wird kontaktiert…"
+                : "Verbinden & Testnachricht senden"}
             </button>
             {connected && (
               <>
@@ -1118,21 +1382,32 @@ function SettingsPage({ connected, setConnected, notify }) {
                   type="button"
                   className="secondary"
                   disabled={busy}
+                  onClick={testSaved}
+                >
+                  <Send size={15} />
+                  Testnachricht senden
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
                   onClick={async () => {
                     setBusy(true);
+                    setFeedback(null);
                     try {
                       const r = await api("/discord/sync", { method: "POST" });
-                      notify(
-                        `${r.total - r.failed} von ${r.total} Aufgaben synchronisiert.`,
-                      );
+                      setFeedback({
+                        ok: !r.failed,
+                        text: `${r.total - r.failed} von ${r.total} Aufgaben synchronisiert.${r.error ? " " + r.error : ""}`,
+                      });
                     } catch (e) {
-                      notify(e.message);
+                      setFeedback({ ok: false, text: e.message });
                     } finally {
                       setBusy(false);
                     }
                   }}
                 >
-                  <Send size={15} />
+                  <CheckCircle2 size={15} />
                   Alle synchronisieren
                 </button>
                 <button
@@ -1140,17 +1415,22 @@ function SettingsPage({ connected, setConnected, notify }) {
                   className="text-button"
                   disabled={busy}
                   onClick={async () => {
+                    setBusy(true);
                     try {
                       await api("/settings", {
                         method: "PUT",
                         body: JSON.stringify({ webhook: "" }),
                       });
                       setConnected(false);
-                      notify(
-                        "Verbindung getrennt. Bestehende Discord-Nachrichten bleiben erhalten.",
-                      );
+                      setTestedAt(null);
+                      setFeedback({
+                        ok: true,
+                        text: "Verbindung getrennt. Bestehende Nachrichten bleiben im Discord-Kanal.",
+                      });
                     } catch (e) {
-                      notify(e.message);
+                      setFeedback({ ok: false, text: e.message });
+                    } finally {
+                      setBusy(false);
                     }
                   }}
                 >
@@ -1160,13 +1440,55 @@ function SettingsPage({ connected, setConnected, notify }) {
             )}
           </div>
         </form>
+        {feedback && (
+          <div
+            role={feedback.ok ? "status" : "alert"}
+            className={
+              "connection-feedback " + (feedback.ok ? "success" : "failure")
+            }
+          >
+            {feedback.ok ? <CheckCircle2 size={20} /> : <X size={20} />}
+            <div>
+              <strong>
+                {feedback.ok
+                  ? "Das hat geklappt"
+                  : "Verbindung konnte nicht bestätigt werden"}
+              </strong>
+              <p>{feedback.text}</p>
+            </div>
+          </div>
+        )}
+        {testedAt && (
+          <p className="test-timestamp">
+            Zuletzt erfolgreich getestet:{" "}
+            {new Date(testedAt).toLocaleString("de-DE")}
+          </p>
+        )}
+        <div className="discord-preview">
+          <span className="preview-avatar">
+            <Clapperboard size={20} />
+          </span>
+          <div>
+            <strong>
+              Studio <span>APP</span>
+            </strong>
+            <div className="preview-embed">
+              <h3>✓ Studio ist verbunden</h3>
+              <p>
+                Die Testnachricht ist angekommen! Deine Aufgaben und
+                Statusänderungen erscheinen hier.
+              </p>
+              <small>STUDIO • Verbindungstest</small>
+            </div>
+          </div>
+        </div>
         <div className="hint">
           <CheckCircle2 size={19} />
           <p>
-            Jede Aufgabe erhält eine farbige Discord-Nachricht. Änderungen
-            aktualisieren dieselbe Nachricht. Die Webhook-URL bleibt auf dem
-            Server und wird nicht an den Browser zurückgegeben. Beim Wechsel des
-            Webhooks bleiben alte Nachrichten im ursprünglichen Kanal.
+            Aufgaben erhalten farbige Nachrichten, die bei Änderungen
+            aktualisiert werden. Die URL bleibt auf dem Server. Bereits
+            vorhandene Aufgaben überträgst du mit „Alle synchronisieren“. Beim
+            Kanalwechsel bleiben alte Nachrichten erhalten.
           </p>
         </div>
       </section>

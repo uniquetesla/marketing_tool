@@ -11,6 +11,14 @@ globalThis.fetch = async function (url, options = {}) {
         body: options.body ? JSON.parse(options.body) : null,
       }) + "\n",
     );
+    if (String(url).includes("/invalid_token"))
+      return new Response("{}", { status: 404 });
+    if (String(url).includes("/denied_token"))
+      return new Response("{}", { status: 403 });
+    if (String(url).includes("/offline_token"))
+      throw new TypeError("fetch failed");
+    if (String(url).includes("/missing_message/messages/"))
+      return new Response("{}", { status: 404 });
     return new Response(
       options.method === "DELETE" ? null : JSON.stringify({ id: "987654321" }),
       {
