@@ -10,6 +10,10 @@ import {
 } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { setGlobalProxyFromEnv } from "node:http";
+
+// Node fetch does not otherwise use the host’s HTTP(S)_PROXY configuration.
+setGlobalProxyFromEnv();
 
 mkdirSync(process.env.DATA_DIR || "data", { recursive: true, mode: 0o700 });
 const db = new DatabaseSync(
@@ -20,6 +24,15 @@ CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT N
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS settings(user_id INTEGER PRIMARY KEY REFERENCES users(id), webhook TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),body TEXT NOT NULL,message_id TEXT,updated INTEGER NOT NULL);`);
+if (
+  !db
+    .prepare("PRAGMA table_info(settings)")
+    .all()
+    .some((column) => column.name === "tested_at")
+) {
+  db.exec("ALTER TABLE settings ADD COLUMN tested_at TEXT");
+}
+
 export const statuses = [
   "Idee",
   "Wird umgesetzt",
@@ -139,21 +152,17 @@ app.post("/api/auth/:action", authLimit, (req, res) => {
     password.length < 12 ||
     password.length > 256
   )
-    return res
-      .status(400)
-      .json({
-        error:
-          "Gültige E-Mail und Passwort mit mindestens 12 Zeichen erforderlich.",
-      });
+    return res.status(400).json({
+      error:
+        "Gültige E-Mail und Passwort mit mindestens 12 Zeichen erforderlich.",
+    });
   const normalized = email.trim().toLowerCase();
   let user = db.prepare("SELECT * FROM users WHERE email=?").get(normalized);
   if (req.params.action === "register") {
     if (user)
-      return res
-        .status(400)
-        .json({
-          error: "Registrierung nicht möglich. Versuche die Anmeldung.",
-        });
+      return res.status(400).json({
+        error: "Registrierung nicht möglich. Versuche die Anmeldung.",
+      });
     const result = db
       .prepare("INSERT INTO users(email,password) VALUES(?,?)")
       .run(normalized, hashPassword(password));
@@ -193,6 +202,64 @@ app.get("/api/tasks", auth, (req, res) =>
       .map((r) => JSON.parse(r.body)),
   ),
 );
+async function discordRequest(url, method, payload) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
+      signal: AbortSignal.timeout(15000),
+      redirect: "error",
+    });
+  } catch (error) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      throw new Error(
+        "Discord antwortet nicht rechtzeitig. Bitte erneut versuchen.",
+      );
+    }
+    throw new Error(
+      "Discord ist vom Server nicht erreichbar. Bitte Netzwerkfreigabe für discord.com, Proxy und TLS-Vertrauen prüfen.",
+    );
+  }
+  if (!response.ok) {
+    const messages = {
+      400: "Discord hat die Nachricht abgelehnt. Bitte Webhook und Kanaltyp prüfen (normaler Textkanal empfohlen).",
+      401: "Der Discord-Webhook ist ungültig oder wurde zurückgesetzt.",
+      403: "Discord-Zugriff verweigert. Bitte Kanalberechtigungen und die Netzwerkfreigabe für discord.com prüfen.",
+      404: "Der Discord-Webhook oder die Nachricht existiert nicht mehr.",
+      429: "Discord begrenzt gerade die Anfragen. Bitte kurz warten und erneut versuchen.",
+    };
+    const error = new Error(
+      messages[response.status] ||
+        `Discord meldet HTTP ${response.status}. Bitte später erneut versuchen.`,
+    );
+    error.status = response.status;
+    throw error;
+  }
+  if (method === "DELETE") return null;
+  const message = await response.json().catch(() => null);
+  if (!message || !/^\d+$/.test(message.id))
+    throw new Error(
+      "Discord hat keine gültige Nachrichtenbestätigung geliefert.",
+    );
+  return message;
+}
+async function testDiscord(webhook) {
+  await discordRequest(webhook + "?wait=true", "POST", {
+    allowed_mentions: { parse: [] },
+    embeds: [
+      {
+        title: "✓ Studio ist verbunden",
+        description:
+          "Die Testnachricht ist angekommen! Neue Aufgaben und Statusänderungen erscheinen ab jetzt in diesem Kanal. Bereits vorhandene Aufgaben kannst du in Studio über „Alle synchronisieren“ übertragen.",
+        color: 0x8172dc,
+        footer: { text: "STUDIO • Verbindungstest" },
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  });
+}
 async function syncDiscord(user, id) {
   const row = db
     .prepare("SELECT * FROM tasks WHERE user_id=? AND id=?")
@@ -210,13 +277,13 @@ async function syncDiscord(user, id) {
     embeds: [
       {
         title: task.title.slice(0, 256),
-        description: (task.description || "Neue Content-Idee").slice(0, 4096),
+        description: (task.description || "Neue Content-Idee").slice(0, 2000),
         color: colors[statuses.indexOf(task.status)],
         fields: [
           { name: "Status", value: task.status, inline: true },
           {
             name: "Kampagne",
-            value: task.category || "Allgemein",
+            value: (task.category || "Allgemein").slice(0, 200),
             inline: true,
           },
           {
@@ -226,7 +293,7 @@ async function syncDiscord(user, id) {
           },
           {
             name: "Plattform / Format",
-            value: `${task.platform} · ${task.format}`,
+            value: `${task.platform} · ${task.format}`.slice(0, 200),
             inline: true,
           },
           ...(task.script
@@ -238,34 +305,20 @@ async function syncDiscord(user, id) {
       },
     ],
   };
-  let url =
-    webhook + (row.message_id ? "/messages/" + row.message_id : "?wait=true");
-  let response = await fetch(url, {
-    method: row.message_id ? "PATCH" : "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (response.status === 404 && row.message_id) {
-    response = await fetch(webhook + "?wait=true", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10000),
-    });
-  }
-  if (!response.ok)
-    throw new Error(
-      "Discord nicht erreichbar (HTTP " +
-        response.status +
-        "). Aufgabe ist gespeichert.",
+  let message;
+  try {
+    message = await discordRequest(
+      webhook + (row.message_id ? "/messages/" + row.message_id : "?wait=true"),
+      row.message_id ? "PATCH" : "POST",
+      payload,
     );
-  const message = await response.json();
-  db.prepare("UPDATE tasks SET message_id=? WHERE id=? AND user_id=?").run(
-    message.id,
-    id,
-    user,
-  );
+  } catch (error) {
+    if (error.status !== 404 || !row.message_id) throw error;
+    message = await discordRequest(webhook + "?wait=true", "POST", payload);
+  }
+  db.prepare(
+    "UPDATE tasks SET message_id=? WHERE id=? AND user_id=? AND EXISTS (SELECT 1 FROM settings WHERE user_id=? AND webhook=?)",
+  ).run(message.id, id, user, user, webhook);
   return "Synchronisiert";
 }
 const queues = new Map();
@@ -302,14 +355,30 @@ app.put("/api/tasks/:id", auth, async (req, res) => {
       "script",
       "date",
     ].some((k) => typeof t[k] !== "string" || t[k].length > 12000) ||
+    ["owner", "notes", "duration", "tone"].some(
+      (key) =>
+        t[key] !== undefined &&
+        (typeof t[key] !== "string" || t[key].length > 12000),
+    ) ||
+    (t.checklist !== undefined &&
+      (!Array.isArray(t.checklist) ||
+        t.checklist.length > 5 ||
+        t.checklist.some(
+          (item) =>
+            ![
+              "Script finalisiert",
+              "Aufnahme erledigt",
+              "Schnitt abgeschlossen",
+              "Untertitel & Cover erstellt",
+              "Freigabe erhalten",
+            ].includes(item),
+        ))) ||
     (t.status === "In Planung" && !t.date) ||
     (t.date && Number.isNaN(Date.parse(t.date)))
   )
-    return res
-      .status(400)
-      .json({
-        error: "Bitte Titel, Status und einen gültigen Planungstermin prüfen.",
-      });
+    return res.status(400).json({
+      error: "Bitte Titel, Status und einen gültigen Planungstermin prüfen.",
+    });
   const old = db
     .prepare("SELECT user_id FROM tasks WHERE id=?")
     .get(req.params.id);
@@ -339,12 +408,14 @@ app.delete("/api/tasks/:id", auth, async (req, res) => {
       .prepare("SELECT message_id FROM tasks WHERE id=?")
       .get(req.params.id);
     if (webhook && current?.message_id) {
-      const r = await fetch(webhook + "/messages/" + current.message_id, {
-        method: "DELETE",
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!r.ok && r.status !== 404)
-        warning = "Discord-Nachricht konnte nicht gelöscht werden.";
+      try {
+        await discordRequest(
+          webhook + "/messages/" + current.message_id,
+          "DELETE",
+        );
+      } catch (error) {
+        if (error.status !== 404) warning = error.message;
+      }
     }
   } catch {
     warning = "Discord-Nachricht konnte nicht gelöscht werden.";
@@ -355,39 +426,88 @@ app.delete("/api/tasks/:id", auth, async (req, res) => {
   );
   res.json({ ok: true, warning });
 });
-app.get("/api/settings", auth, (req, res) =>
+app.get("/api/settings", auth, (req, res) => {
+  const settings = db
+    .prepare("SELECT webhook,tested_at FROM settings WHERE user_id=?")
+    .get(req.user);
   res.json({
-    connected: !!db
-      .prepare("SELECT webhook FROM settings WHERE user_id=?")
-      .get(req.user)?.webhook,
-  }),
-);
-app.put("/api/settings", auth, (req, res) => {
-  const webhook = req.body.webhook;
-  if (typeof webhook !== "string" || (webhook && !validWebhook(webhook)))
+    connected: !!settings?.webhook,
+    testedAt: settings?.tested_at || null,
+  });
+});
+const discordTestLimit = rateLimit({
+  windowMs: 60000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.put("/api/settings", auth, discordTestLimit, async (req, res) => {
+  const webhook =
+    typeof req.body.webhook === "string" ? req.body.webhook.trim() : null;
+  if (webhook === null || (webhook && !validWebhook(webhook)))
+    return res.status(400).json({
+      error:
+        "Bitte eine gültige https://discord.com/api/webhooks/… URL eingeben.",
+    });
+  const previous = db
+    .prepare("SELECT webhook FROM settings WHERE user_id=?")
+    .get(req.user)?.webhook;
+  try {
+    // Keep the previous working connection and message IDs on test failure.
+    if (webhook) await testDiscord(webhook);
+    const testedAt = webhook ? new Date().toISOString() : null;
+    db.prepare(
+      "INSERT INTO settings(user_id,webhook,tested_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET webhook=excluded.webhook,tested_at=excluded.tested_at",
+    ).run(req.user, webhook, testedAt);
+    if (previous !== webhook)
+      db.prepare("UPDATE tasks SET message_id=NULL WHERE user_id=?").run(
+        req.user,
+      );
+    res.json({ connected: !!webhook, testedAt });
+  } catch (error) {
+    res.status(502).json({
+      error: error.message + " Die bisherige Verbindung wurde nicht verändert.",
+    });
+  }
+});
+app.post("/api/discord/test", auth, discordTestLimit, async (req, res) => {
+  const webhook = db
+    .prepare("SELECT webhook FROM settings WHERE user_id=?")
+    .get(req.user)?.webhook;
+  if (!webhook)
     return res
       .status(400)
-      .json({
-        error:
-          "Bitte eine gültige https://discord.com/api/webhooks/… URL eingeben.",
-      });
-  db.prepare(
-    "INSERT INTO settings(user_id,webhook) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET webhook=excluded.webhook",
-  ).run(req.user, webhook);
-  db.prepare("UPDATE tasks SET message_id=NULL WHERE user_id=?").run(req.user);
-  res.json({ connected: !!webhook });
+      .json({ error: "Bitte zuerst einen Webhook verbinden." });
+  try {
+    await testDiscord(webhook);
+    const testedAt = new Date().toISOString();
+    db.prepare("UPDATE settings SET tested_at=? WHERE user_id=?").run(
+      testedAt,
+      req.user,
+    );
+    res.json({ testedAt });
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
 });
 app.post("/api/discord/sync", auth, async (req, res) => {
+  if (
+    !db.prepare("SELECT webhook FROM settings WHERE user_id=?").get(req.user)
+      ?.webhook
+  )
+    return res.status(400).json({ error: "Bitte zuerst Discord verbinden." });
   const rows = db.prepare("SELECT id FROM tasks WHERE user_id=?").all(req.user);
+  let firstError;
   let failed = 0;
   for (const row of rows) {
     try {
       await queuedSync(req.user, row.id);
-    } catch {
+    } catch (error) {
+      firstError ||= error.message;
       failed++;
     }
   }
-  res.json({ total: rows.length, failed });
+  res.json({ total: rows.length, failed, error: firstError });
 });
 if (!production) {
   const { createServer } = await import("vite");

@@ -1,6 +1,6 @@
 # Studio — Marketing Planner
 
-Vollständige deutschsprachige Webanwendung mit React, Express und SQLite. Benötigt Node.js 24 (wegen `node:sqlite`).
+Vollständige deutschsprachige Webanwendung mit React, Express und SQLite. Benötigt Node.js 24.22 oder neuer (wegen `node:sqlite` und nativer Proxy-Unterstützung).
 
 ## Lokal starten
 
@@ -25,15 +25,16 @@ npm start
 - Pro Konto getrennte Aufgaben und Discord-Konfiguration. Kampagnen werden über das Feld „Kampagne / Übermenü“ frei angelegt und in der Navigation gruppiert.
 - Kachelboard mit Suche, Statusfilter und Kalender. Alle sieben gewünschten Status sind vorhanden. „In Planung“ benötigt einen Termin; Termine werden als lokale Uhrzeiten erfasst und in Discord entsprechend angezeigt.
 - Geführter Videoscript-Assistent mit Ziel, Zielgruppe, Hook und CTA. Erzeugt eine editierbare Marketing-Vorlage mit Hook, Problem, Mehrwert, Beweis und CTA. Keine externe KI und keine erfundenen Leistungsnachweise.
-- Responsive Oberfläche und Tastaturbedienung im Aufgabendialog.
+- Glas-UI mit transparenten Flächen, Hintergrundunschärfe und lokal bereitgestellten Schriftarten. Responsive Oberfläche und Tastaturbedienung im Aufgabendialog.
+- Aufgaben in drei übersichtlichen Bereichen: Idee, Planung und Script. Ein Titel reicht zum Speichern. Format-Schnellstart, Termin-Schnellauswahl sowie optionale Verantwortliche, Produktionsnotizen und Checkliste. Videolänge und Tonalität fließen in die Script-Vorlage ein; vorhandene Scripts werden erst nach einer zweiten Bestätigung ersetzt.
 
 ## Discord
 
-Unter Einstellungen eine Discord-Kanal-Webhook-URL hinterlegen. Erlaubt sind ausschließlich HTTPS-Webhooks auf `discord.com`. Die URL wird serverseitig in der Datenbank gespeichert und nicht zurückgeliefert; sie ist ein Geheimnis. Datenverzeichnis entsprechend schützen, niemals öffentlich ausliefern und nicht einchecken.
+Unter Einstellungen eine Discord-Kanal-Webhook-URL hinterlegen. Beim Verbinden wird sofort eine Testnachricht gesendet und die Nachrichtenbestätigung von Discord geprüft. Erst nach Erfolg wird die Verbindung gespeichert. Ein fehlgeschlagener Wechsel lässt die bisherige Verbindung und Nachrichten-IDs unverändert. Über „Testnachricht senden“ kann auch eine vorhandene Verbindung erneut geprüft werden. Der Zeitpunkt des letzten erfolgreichen Tests wird angezeigt (keine permanente Verfügbarkeitsgarantie). Erlaubt sind ausschließlich HTTPS-Webhooks auf `discord.com`. Die URL wird serverseitig in der Datenbank gespeichert und nicht zurückgeliefert; sie ist ein Geheimnis. Datenverzeichnis entsprechend schützen, niemals öffentlich ausliefern und nicht einchecken.
 
 Beim Speichern einer Aufgabe wird ein farbiges Embed erstellt. Die Nachrichten-ID wird gespeichert; folgende Änderungen aktualisieren dieselbe Nachricht per PATCH. Gleichzeitige Aktualisierungen einer Aufgabe werden serialisiert. Fehlende Nachrichten werden neu erstellt. Erwähnungen sind deaktiviert. Discord-Fehler verhindern nicht die Speicherung der Aufgabe und werden in der Oberfläche gemeldet. „Alle synchronisieren“ übernimmt vorhandene Aufgaben oder wiederholt fehlgeschlagene Übertragungen.
 
-Beim Löschen einer Aufgabe wird auch die Discord-Nachricht entfernt, soweit Discord erreichbar ist. Beim Trennen oder Wechseln des Webhooks bleiben bisherige Nachrichten erhalten; bei einer neuen Verbindung können neue Nachrichten entstehen. Die Cloud-Netzwerkregeln müssen `discord.com` erlauben. Ein echter Discord-End-to-End-Test benötigt einen eigenen Webhook und wurde ohne Zugangsdaten nicht durchgeführt. Es gibt keine dauerhafte Hintergrundwarteschlange: nach einem Fehler manuell erneut synchronisieren.
+Beim Löschen einer Aufgabe wird auch die Discord-Nachricht entfernt, soweit Discord erreichbar ist. Beim Trennen oder Wechseln des Webhooks bleiben bisherige Nachrichten erhalten; bei einer neuen Verbindung können neue Nachrichten entstehen. Die Cloud-Netzwerkregeln müssen `discord.com` erlauben. Der Server übernimmt `HTTP_PROXY`, `HTTPS_PROXY` und `NO_PROXY` nativ für ausgehende Anfragen; TLS-Prüfung bleibt aktiv. Diese Cloud-Umgebung verweigert aktuell den Zugriff auf `discord.com` (HTTP 403 vom Proxy). In den Umgebungseinstellungen `discord.com` zur bestehenden Domainfreigabe hinzufügen; danach die gespeicherte Verbindung erneut testen. Fehler für Netzwerk, Zeitüberschreitung, ungültige Webhooks, fehlende Berechtigung und Discord-Ratenbegrenzung werden direkt angezeigt. Ein echter Discord-End-to-End-Test benötigt einen eigenen Webhook und wurde ohne Zugangsdaten nicht durchgeführt. Es gibt keine dauerhafte Hintergrundwarteschlange: nach einem Fehler manuell erneut synchronisieren.
 
 ## Daten und Betrieb
 
@@ -43,6 +44,6 @@ Registrierung ist offen; jede Person erhält einen eigenen privaten Workspace. G
 
 ## Validierung
 
-`npm test` prüft Registrierung und Login, falsche Passwörter, Cookie-Eigenschaften, Account-Isolation, fremde Schreibursprünge, Terminvalidierung, Webhook-Hostvalidierung, Aufgabenänderung und -löschung, Sitzungswiderruf sowie Produktionsauslieferung und Sicherheitsheader. Tests verwenden eine temporäre Datenbank.
+`npm test` prüft Registrierung und Login, falsche Passwörter, Cookie-Eigenschaften, Account-Isolation, fremde Schreibursprünge, Terminvalidierung, Webhook-Hostvalidierung, Aufgabenänderung und -löschung, Sitzungswiderruf sowie Produktionsauslieferung und Sicherheitsheader. Zusätzlich werden automatische Testnachrichten, Verbindungsfehler und der Erhalt einer bisherigen Verbindung nach fehlgeschlagenem Webhook-Wechsel geprüft. Tests verwenden eine temporäre Datenbank und einen ausdrücklich eingebundenen Discord-Testtransport. Browserprüfung: Titel-Schnellerfassung, Formatvorlagen, Planung, Produktionsnotizen und Checkliste nach Neuladen, Script-Timing und Tonalität, Schutz vor Überschreiben sowie Discord-Test-Erfolg/-Fehler und mobile Aufgabenerfassung.
 
 Für Cloud-Aufgaben den vorhandenen Checkout `/workspace/marketing_tool` verwenden; kein zusätzliches Git-Worktree erforderlich. Nach Snapshot-Wiederherstellung den Server neu mit `npm run dev` starten; Prozesse werden nicht mitgesichert.
